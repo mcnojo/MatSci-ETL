@@ -22,18 +22,6 @@ from contextlib import contextmanager
 
 log = logging.getLogger("pipeline.metrics")
 
-_current_metrics: contextvars.ContextVar[PipelineMetrics | None] = contextvars.ContextVar(
-    "pipeline_metrics", default=None,
-)
-
-
-def get_current_metrics() -> PipelineMetrics | None:
-    return _current_metrics.get()
-
-
-def set_current_metrics(m: PipelineMetrics | None) -> contextvars.Token:
-    return _current_metrics.set(m)
-
 
 class PipelineMetrics:
     """Collects LLM call stats and element counts for a single pipeline run."""
@@ -105,3 +93,16 @@ class PipelineMetrics:
                 "total": total_in + total_out,
             },
         }
+
+
+_current_metrics: contextvars.ContextVar[PipelineMetrics | None] = contextvars.ContextVar(
+    "pipeline_metrics", default=None,
+)
+
+
+def get_current_metrics() -> PipelineMetrics | None:
+    return _current_metrics.get()
+
+
+def set_current_metrics(m: PipelineMetrics | None) -> contextvars.Token:
+    return _current_metrics.set(m)
