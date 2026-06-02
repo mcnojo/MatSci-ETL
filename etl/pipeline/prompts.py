@@ -17,13 +17,12 @@ Usage:
     prompt = get_prompt("toc_detector_single_page", style, content=text)
 """
 
-from __future__ import annotations
 
 import json
 from typing import Callable
 
 
-# ─── toc_detector_single_page ────────────────────────────────────────────────
+# toc_detector_single_page
 
 def _toc_detector_single_page_upstream(*, content: str) -> str:
     return f"""
@@ -69,7 +68,7 @@ Reply with only this JSON, nothing else:
 {{"toc_detected": "yes or no"}}"""
 
 
-# ─── detect_page_index ───────────────────────────────────────────────────────
+# detect_page_index
 
 def _detect_page_index_upstream(*, toc_content: str) -> str:
     return f"""
@@ -96,7 +95,7 @@ Reply with only this JSON, nothing else:
 {{"page_index_given_in_toc": "yes or no"}}"""
 
 
-# ─── check_if_toc_transformation_is_complete ─────────────────────────────────
+# check_if_toc_transformation_is_complete
 
 def _check_if_toc_transformation_is_complete_upstream(*, content: str, toc: str) -> str:
     return (
@@ -128,7 +127,7 @@ Reply with only this JSON, nothing else:
 {{"completed": "yes or no"}}"""
 
 
-# ─── extract_toc_content (+ continuation) ────────────────────────────────────
+# extract_toc_content (+ continuation)
 
 def _extract_toc_content_upstream(*, content: str) -> str:
     return f"""
@@ -151,7 +150,7 @@ def _extract_toc_content_continue_local() -> str:
     return "please continue the generation of table of contents, directly output the remaining part of the structure"
 
 
-# ─── toc_index_extractor ─────────────────────────────────────────────────────
+# toc_index_extractor
 
 def _toc_index_extractor_upstream(*, toc, content: str) -> str:
     return (
@@ -208,7 +207,7 @@ def _toc_index_extractor_local(*, toc, content: str) -> str:
     )
 
 
-# ─── toc_transformer (+ continuation) ────────────────────────────────────────
+# toc_transformer (+ continuation)
 
 def _toc_transformer_upstream(*, toc_content: str) -> str:
     return (
@@ -265,7 +264,7 @@ def _toc_transformer_continue_local(*, toc_content: str, last_complete: str) -> 
         Please continue the json structure, directly output the remaining part of the json structure."""
 
 
-# ─── add_page_number_to_toc ──────────────────────────────────────────────────
+# add_page_number_to_toc
 
 def _add_page_number_to_toc_upstream(*, part: str, structure) -> str:
     return (
@@ -297,7 +296,7 @@ def _add_page_number_to_toc_upstream(*, part: str, structure) -> str:
 _add_page_number_to_toc_local = _add_page_number_to_toc_upstream
 
 
-# ─── generate_toc_init ───────────────────────────────────────────────────────
+# generate_toc_init
 
 def _generate_toc_init_upstream(*, part: str) -> str:
     return (
@@ -331,7 +330,7 @@ def _generate_toc_init_upstream(*, part: str) -> str:
 _generate_toc_init_local = _generate_toc_init_upstream
 
 
-# ─── generate_toc_init_with_hint ─────────────────────────────────────────────
+# generate_toc_init_with_hint
 # Variant used when check_toc found a TOC. The TOC text is included as a
 # non-authoritative hint — the model should still verify against the page
 # content because TOCs sometimes omit sections or use different titles.
@@ -371,7 +370,7 @@ def _generate_toc_init_with_hint_upstream(*, part: str, toc_hint: str) -> str:
 _generate_toc_init_with_hint_local = _generate_toc_init_with_hint_upstream
 
 
-# ─── generate_toc_continue ───────────────────────────────────────────────────
+# generate_toc_continue
 
 def _generate_toc_continue_upstream(*, toc_content, part: str) -> str:
     return (
@@ -407,7 +406,7 @@ def _generate_toc_continue_upstream(*, toc_content, part: str) -> str:
 _generate_toc_continue_local = _generate_toc_continue_upstream
 
 
-# ─── check_title_appearance ──────────────────────────────────────────────────
+# check_title_appearance
 
 def _check_title_appearance_upstream(*, title: str, page_text: str) -> str:
     return f"""
@@ -436,7 +435,7 @@ Reply with only this JSON, nothing else:
 {{"answer": "yes or no"}}"""
 
 
-# ─── check_title_appearance_in_start ─────────────────────────────────────────
+# check_title_appearance_in_start
 
 def _check_title_appearance_in_start_upstream(*, title: str, page_text: str) -> str:
     return f"""
@@ -467,7 +466,7 @@ Reply with only this JSON, nothing else:
 {{"start_begin": "yes or no"}}"""
 
 
-# ─── single_toc_item_index_fixer ─────────────────────────────────────────────
+# single_toc_item_index_fixer
 
 def _single_toc_item_index_fixer_upstream(*, section_title, content: str) -> str:
     return (
@@ -506,7 +505,7 @@ def _single_toc_item_index_fixer_local(*, section_title, content: str) -> str:
     )
 
 
-# ─── generate_node_summary ───────────────────────────────────────────────────
+# generate_node_summary
 # node_text is wrapped with context markers:
 #   <<<context-before>>>{...}<<<section-content>>>{...}<<<context-after>>>{...}
 # The summary covers ONLY <<<section-content>>>. Context blocks exist solely to
@@ -530,7 +529,7 @@ def _generate_node_summary_upstream(*, node_text: str) -> str:
 _generate_node_summary_local = _generate_node_summary_upstream
 
 
-# ─── verify_node_summary ─────────────────────────────────────────────────────
+# verify_node_summary
 # Fast-model fidelity check: does the summary cover the section's content?
 
 def _verify_node_summary_upstream(*, title: str, section_text: str, summary: str) -> str:
@@ -553,7 +552,7 @@ Reply with only this JSON, nothing else:
 _verify_node_summary_local = _verify_node_summary_upstream
 
 
-# ─── regenerate_summary_with_missed_topics ───────────────────────────────────
+# regenerate_summary_with_missed_topics
 
 def _regenerate_summary_with_missed_topics_upstream(
     *, node_text: str, prior_summary: str, missed_topics: list,
@@ -576,7 +575,7 @@ Return only the revised summary text, no preamble."""
 _regenerate_summary_with_missed_topics_local = _regenerate_summary_with_missed_topics_upstream
 
 
-# ─── figure_aware_resummarize ────────────────────────────────────────────────
+# figure_aware_resummarize
 # Used in Stage E to re-write a leaf node's summary using per-figure data.
 
 def _figure_aware_resummarize_upstream(
@@ -604,7 +603,7 @@ Return only the revised summary text, no preamble."""
 _figure_aware_resummarize_local = _figure_aware_resummarize_upstream
 
 
-# ─── summarize_from_children ─────────────────────────────────────────────────
+# summarize_from_children
 # Bottom-up parent summary derived from child summaries (no figure data, no OCR).
 
 def _summarize_from_children_upstream(
@@ -623,7 +622,7 @@ Write a single coherent summary of the parent section that synthesizes the child
 _summarize_from_children_local = _summarize_from_children_upstream
 
 
-# ─── generate_doc_description ────────────────────────────────────────────────
+# generate_doc_description
 
 def _generate_doc_description_upstream(*, structure) -> str:
     return f"""Your are an expert in generating descriptions for a document.
@@ -644,7 +643,7 @@ def _generate_doc_description_local(*, structure) -> str:
     Directly return the description, do not include any other text."""
 
 
-# ─── Registry & dispatcher ───────────────────────────────────────────────────
+# Registry & dispatcher
 
 _PROMPTS: dict[str, dict[str, Callable[..., str]]] = {
     "toc_detector_single_page": {

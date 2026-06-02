@@ -34,4 +34,4 @@ app.get("/pdf/:paper", (req, res) => {
 });
 
 const PORT = process.env.PORT || 5173;
-app.listen(PORT, () => console.log(`kb viewer  →  http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`kb viewer  ->  http://localhost:${PORT}`));

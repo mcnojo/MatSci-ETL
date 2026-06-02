@@ -1,19 +1,16 @@
-from __future__ import annotations
 import asyncio
 import base64
 import re
-import sys
 import time
 from pathlib import Path
 from openai import AsyncOpenAI
 
-from .node_schema import TreeNode, DocumentTree, VisualElement, NodeSource
+from shared.schemas import TreeNode, DocumentTree, VisualElement, NodeSource
+from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
+
 from .chem_extractor import extract_chem_entities, load_seed_entities
 from .chandra_parser import parse as parse_chandra
-from . import tree_builder  # for the run-scoped logger (_current_logger)
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT  # noqa: E402
+from .metrics import get_current_metrics
 
 
 def _image_to_b64(image_path: str) -> str:
@@ -25,10 +22,10 @@ def _record_vision_call(
     label: str, duration_s: float, errored: bool,
     input_tokens: int = 0, output_tokens: int = 0,
 ) -> None:
-    """Push an OCR call timing + token usage into the run-scoped JsonLogger if one is set."""
-    logger = getattr(tree_builder, "_current_logger", None)
-    if logger is not None:
-        logger.record_llm_call(
+    """Push an OCR call timing into the current PipelineMetrics if one is set."""
+    m = get_current_metrics()
+    if m is not None:
+        m.record_llm_call(
             label, duration_s, error=errored,
             input_tokens=input_tokens, output_tokens=output_tokens,
         )
@@ -110,7 +107,7 @@ class Enricher:
         return page_elements
 
 
-# ─── Tree enrichment: assign elements to nodes ───────────────────────────────
+# Tree enrichment: assign elements to nodes
 
 def flatten_tree(nodes: list[TreeNode]) -> list[TreeNode]:
     result = []

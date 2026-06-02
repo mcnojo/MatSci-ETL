@@ -1,34 +1,28 @@
-# ─── LLM for tree building (text-based, not vision) ───────────────────────────
-# Provider is auto-detected from base_url (:11434 → ollama; else → openai),
-# or you can set it explicitly. Use prompt_style to pick the prompt variant:
-#   - "local":    elaborated for small open models (default; keep with Ollama/MLX)
-#   - "upstream": verbatim from VectifyAI/PageIndex (use with strong cloud models)
+# LLM for tree building (text-based, not vision)
+# Provider: auto-detected from base_url (:11434 -> ollama, else -> openai),
+# or set explicitly. prompt_style: "local" for small open models, "upstream"
+# for strong cloud models (verbatim VectifyAI/PageIndex prompts).
+
+
+## OpenAI ──
+# tree_llm:
+#   provider: openai
+#   model: "gpt-4o"
+#   model_fast: "gpt-4o-mini"
+#   base_url: "https://api.openai.com/v1"
+#   api_key_env: "OPENAI_API_KEY"
+#   prompt_style: upstream
+#   max_response_tokens: 8192
 #
-# Examples:
-#   Ollama (local):
-#     provider: ollama        # optional; auto-detected
-#     model: "gemma4:e4b-mlx"
-#     base_url: "http://localhost:11434/v1"
-#     prompt_style: local
-#     num_ctx: 32768          # Ollama context window
-#
-#   OpenAI (cloud):
-#     provider: openai
-#     model: "gpt-4o"
-#     model_fast: "gpt-4o-mini"
-#     base_url: "https://api.openai.com/v1"
-#     api_key_env: "OPENAI_API_KEY"
-#     prompt_style: upstream
-#     max_response_tokens: 8192
-#
-#   Anthropic (native SDK):
-#     provider: anthropic
-#     model: "claude-sonnet-4-5"
-#     model_fast: "claude-haiku-4-5"
-#     api_key_env: "ANTHROPIC_API_KEY"
-#     prompt_style: upstream
-#     max_response_tokens: 8192
-#     # base_url is ignored; Anthropic SDK uses its own endpoint.
+
+## Anthropic
+# tree_llm:
+#   provider: anthropic
+#   model: "claude-sonnet-4-5"
+#   model_fast: "claude-haiku-4-5"
+#   api_key_env: "ANTHROPIC_API_KEY"
+#   prompt_style: upstream
+#   max_response_tokens: 8192
 
 tree_llm:
   provider: ollama                            # ollama | openai | anthropic (optional; auto-detected from base_url)
@@ -40,14 +34,14 @@ tree_llm:
   num_ctx: 32768                              # Ollama context window (input + output tokens). e4b supports 128K.
   max_response_tokens: 8192                   # cloud response cap (OpenAI/Anthropic max_tokens); ignored by Ollama
 
-# ─── Vision server (OCR model, any OpenAI-compatible endpoint) ────────────────
+# Vision server (OCR model, any OpenAI-compatible endpoint)
 # Works with vLLM, Ollama, MLX, or any server exposing /v1/chat/completions
 vision_server:
   base_url: "vllm-instance://chandra:8004/v1"   # resolved at load from vllm/aws/instances/chandra.ip
   api_key: "EMPTY"                              # vLLM default
   ocr_model: "datalab-to/chandra-ocr-2"
 
-# ─── Tree building ─────────────────────────────────────────────────────────────
+# Tree building
 tree:
   toc_check_pages: 25
   max_pages_per_node: 10
@@ -58,7 +52,7 @@ tree:
   summary_overlap_pages: 1            # adjacent pages included as context (boundary disambiguation; not summarized)
   verify_summaries: true              # fast-model fidelity check + 1 retry on missed topics
 
-# ─── Layout detection (doclayout-yolo) ────────────────────────────────────────
+# Layout detection (doclayout-yolo)
 layout:
   model_path: null                    # null = use doclayout-yolo default
   confidence_threshold: 0.25
@@ -70,21 +64,34 @@ layout:
     - "table_caption"
     - "isolate_formula"
 
-# ─── Page rendering ────────────────────────────────────────────────────────────
+# Page rendering
 rendering:
   dpi: 200
   ocr_dpi: 300
   page_format: "PNG"
 
-# ─── Enrichment ───────────────────────────────────────────────────────────────
+# Enrichment
 enrichment:
   run_ocr: true
   run_chem_entity_extraction: true
   max_concurrent_enrichments: 4
   figure_aware_resummarize: true      # post-enrichment Stage E: re-summarize nodes with figure data (no new OCR calls)
 
-# ─── Output ────────────────────────────────────────────────────────────────────
+# Storage backend
+# backend: "local" (default) or "s3"
+# local: artifacts written to kb_root on disk
+# s3:    artifacts written to s3://bucket/prefix/documents/{doc_id}/runs/{run_id}/...
+storage:
+  backend: "local"
+  local:
+    root: "./kb"                       # only used when backend=local
+  s3:
+    bucket: "chem-lit-artifacts"       # only used when backend=s3
+    prefix: ""
+    region: null                       # null = use AWS_DEFAULT_REGION / instance profile
+
+# Output
 output:
-  kb_root: "./kb"
+  kb_root: "./kb"                      # legacy; overridden by storage.local.root when storage is configured
   save_page_images: true
   pretty_print_json: true

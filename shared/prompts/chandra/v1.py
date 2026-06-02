@@ -1,5 +1,4 @@
 """Chandra-OCR-2 prompts, v1 — initial verbatim port from vllm/client.py."""
-from __future__ import annotations
 
 CHANDRA_ALLOWED_TAGS = [
     "math", "br", "i", "b", "u", "del", "sup", "sub", "table", "tr", "td",

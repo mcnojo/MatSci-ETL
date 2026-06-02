@@ -1,4 +1,3 @@
-from __future__ import annotations
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -38,7 +37,7 @@ class TreeNode(BaseModel):
     start_index: int  # 1-based physical page (inclusive)
     end_index: int    # 1-based physical page (inclusive)
     summary: Optional[str] = None
-    nodes: list[TreeNode] = Field(default_factory=list)
+    nodes: list["TreeNode"] = Field(default_factory=list)
     source: Optional[NodeSource] = None
     visual_elements: list[VisualElement] = Field(default_factory=list)
 

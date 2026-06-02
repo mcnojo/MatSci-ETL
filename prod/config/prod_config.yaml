@@ -1,0 +1,44 @@
+# Temporal
+temporal:
+  address: "localhost:7233"         # cpu-pipeline-01 runs Temporal server locally
+  namespace: "default"
+  postgres_uri: "postgresql://temporal:temporal@localhost:5432/temporal"
+
+# Worker concurrency
+worker:
+  max_concurrent_cpu: 8             # PyMuPDF, tree, regex, formatting, S3 IO
+  max_concurrent_gpu: 4             # chandra + text LLM
+
+# SQS ingestion (Phase 3)
+ingestion:
+  queue_url: ""                     # SQS queue URL, set after queue creation
+  poll_interval_s: 5
+  visibility_timeout_s: 300
+
+# Storage
+storage:
+  backend: "s3"
+  s3:
+    bucket: "chem-lit-artifacts"
+    prefix: ""
+    region: "us-east-1"
+
+# Pipeline config (merged with etl/config/pipeline_config.yaml)
+# In prod the pipeline config is loaded from etl/config/pipeline_config.yaml
+# with these overrides applied. The vision_server.base_url is resolved via
+# SSM or tag-based lookup instead of vllm-instance:// files.
+pipeline_overrides:
+  vision_server:
+    base_url: null                  # resolved at worker startup via SSM /ocr/chandra/base_url
+  output:
+    kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
+    save_page_images: false         # no need to persist full-page renders in prod
+
+# EC2 instance tags (for infra scripts)
+instances:
+  cpu:
+    name: "ocr-bench-cpu-pipeline-01"
+    type: "m7i.xlarge"
+  gpu:
+    name: "ocr-bench-gpu-model-01"
+    type: "g6.2xlarge"
