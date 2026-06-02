@@ -10,7 +10,6 @@ Chandra emits one of two modes based on image content:
 or None if content is empty.
 """
 
-from __future__ import annotations
 
 import json
 import re
@@ -22,7 +21,7 @@ _MATH_INNER = re.compile(r"<math(?:\s+[^>]*)?>([\s\S]*?)</math>", re.IGNORECASE)
 _CHEM_INNER = re.compile(r"<chem(?:\s+[^>]*)?>([\s\S]*?)</chem>", re.IGNORECASE)
 _BBOX = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
 
-# chandra's analyze schema keys → our singular field names
+# chandra's analyze schema keys -> our singular field names
 _ANALYZE_FIELDS = {
     "titles": "title",
     "x_labels": "x_label",
@@ -58,7 +57,7 @@ def parse(content: str | None) -> dict | None:
     return {"format": "unknown", "raw_head": content[:500]}
 
 
-# ─── figure_analysis ──────────────────────────────────────────────────────────
+# figure_analysis
 
 def _build_figure_analysis(json_str: str, truncated: bool) -> dict:
     try:
@@ -100,7 +99,7 @@ def _salvage_json_array(head: str) -> str | None:
         return None
 
 
-# ─── layout_html ──────────────────────────────────────────────────────────────
+# layout_html
 
 def _build_layout_html(content: str) -> dict:
     extractor = _BlockExtractor()

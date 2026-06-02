@@ -24,7 +24,6 @@ Prompt variants ("upstream" verbatim PageIndex vs "local" elaborated for small
 models) are selected via tree_llm.prompt_style.
 """
 
-from __future__ import annotations
 
 import asyncio
 import copy
@@ -35,21 +34,19 @@ import os
 import random
 import re
 import time
-from contextlib import contextmanager
-from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pymupdf
 import tiktoken
-import yaml
 from openai import AsyncOpenAI, OpenAI
 
-from .node_schema import DocumentTree, TreeNode
+from shared.schemas import DocumentTree, TreeNode
+
+from .metrics import get_current_metrics
 from .prompts import get_prompt
 
-# ─── Module-level state, set once by _init_clients ───────────────────────────
+# Module-level state, set once by _init_clients
 _provider: str = "ollama"          # "ollama" | "openai" | "anthropic"
 _prompt_style: str = "local"       # "local" | "upstream"
 
@@ -68,17 +65,7 @@ _max_response_tokens: int = 8192   # cloud response cap (OpenAI max_tokens / Ant
 _ollama_base: str = ""             # Ollama native API base (without /v1), empty if non-Ollama
 _active_model: str | None = None   # currently loaded model in VRAM (Ollama only)
 
-# Metrics logger set by build_tree_async / run_etl; LLM helpers record call
-# timings into it without explicit threading.
-_current_logger: "JsonLogger | None" = None
-
 log = logging.getLogger("tree_builder")
-
-
-def set_logger(logger: "JsonLogger | None") -> None:
-    """Register a JsonLogger so LLM helpers can record call timings into it."""
-    global _current_logger
-    _current_logger = logger
 
 
 def _init_clients(config: dict):
@@ -187,7 +174,7 @@ def _ensure_model_exclusive(model_name: str):
     _active_model = model_name
 
 
-# ─── LLM call wrappers ───────────────────────────────────────────────────────
+# LLM call wrappers
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
@@ -211,7 +198,7 @@ def _looks_like_valid_json(content: str) -> bool:
         return False
 
 
-# ─── Provider-specific call shims ────────────────────────────────────────────
+# Provider-specific call shims
 
 def _openai_messages_to_anthropic(messages: list) -> tuple[str | None, list]:
     """Split OpenAI-style messages into (system, messages) for Anthropic.
@@ -297,8 +284,9 @@ def _call_sync(model: str, messages: list, temperature: float, json_mode: bool) 
         errored = True
         raise
     finally:
-        if _current_logger is not None:
-            _current_logger.record_llm_call(
+        m = get_current_metrics()
+        if m is not None:
+            m.record_llm_call(
                 model, time.perf_counter() - t0, error=errored,
                 input_tokens=usage[0], output_tokens=usage[1],
             )
@@ -333,8 +321,9 @@ async def _call_async(model: str, messages: list, temperature: float, json_mode:
         errored = True
         raise
     finally:
-        if _current_logger is not None:
-            _current_logger.record_llm_call(
+        m = get_current_metrics()
+        if m is not None:
+            m.record_llm_call(
                 model, time.perf_counter() - t0, error=errored,
                 input_tokens=usage[0], output_tokens=usage[1],
             )
@@ -428,7 +417,7 @@ async def llm_acompletion(model: str, prompt: str, json_mode: bool = False) -> s
     return ""
 
 
-# ─── JSON extraction ──────────────────────────────────────────────────────────
+# JSON extraction
 
 def _get_json_content(response: str) -> str:
     start_idx = response.find("```json")
@@ -495,7 +484,7 @@ def extract_json(content: str) -> dict | list:
         return {}
 
 
-# ─── PDF text extraction ──────────────────────────────────────────────────────
+# PDF text extraction
 
 def get_page_tokens(pdf_path: str, model: str | None = None) -> list[tuple[str, int]]:
     doc = pymupdf.open(pdf_path)
@@ -516,7 +505,7 @@ def is_likely_scanned(page_list: list[tuple[str, int]], threshold: int = 30) -> 
     return median_words < threshold
 
 
-# ─── Utility functions (from PageIndex utils.py) ──────────────────────────────
+# Utility functions (from PageIndex utils.py)
 
 def convert_physical_index_to_int(data):
     if isinstance(data, list):
@@ -604,7 +593,7 @@ def add_preface_if_needed(data):
 
 
 def validate_and_truncate_physical_indices(
-    toc, page_list_length, start_index=1, logger=None
+    toc, page_list_length, start_index=1,
 ):
     if not toc:
         return toc
@@ -612,11 +601,10 @@ def validate_and_truncate_physical_indices(
     for item in toc:
         if item.get("physical_index") is not None:
             if item["physical_index"] > max_allowed:
-                if logger:
-                    logger.info(
-                        f"Removed physical_index for '{item.get('title')}' "
-                        f"(was {item['physical_index']}, beyond document)"
-                    )
+                log.debug(
+                    "Removed physical_index for '%s' (was %d, beyond document)",
+                    item.get("title"), item["physical_index"],
+                )
                 item["physical_index"] = None
     return toc
 
@@ -774,116 +762,7 @@ def create_clean_structure_for_description(structure):
     return structure
 
 
-# ─── JSON logger (from PageIndex) ─────────────────────────────────────────────
-
-class JsonLogger:
-    """Pipeline run log + metrics"""
-
-    def __init__(self, log_dir: str = "./logs", paper_id: str = "run"):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.paper_id = paper_id
-        self.filename = f"{paper_id}_{ts}.json"
-        os.makedirs(log_dir, exist_ok=True)
-        self._dir = log_dir
-        self.log_data: list = []
-        self._stages: dict[str, dict] = {}
-        self._llm_calls: dict[str, dict] = {}
-        self._counts: dict = {}
-        self._t0 = time.perf_counter()
-
-    def info(self, message):
-        self.log_data.append(
-            message if isinstance(message, dict) else {"message": message}
-        )
-        self._save()
-
-    def error(self, message):
-        self.info(message)
-
-    @contextmanager
-    def stage(self, name: str):
-        t0 = time.perf_counter()
-        try:
-            yield
-        finally:
-            self._stages[name] = {"duration_s": round(time.perf_counter() - t0, 3)}
-            self._save()
-
-    def record_llm_call(
-        self,
-        model: str,
-        duration_s: float,
-        error: bool = False,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-    ):
-        bucket = self._llm_calls.setdefault(
-            model,
-            {"count": 0, "total_s": 0.0, "errors": 0, "input_tokens": 0, "output_tokens": 0},
-        )
-        bucket["count"] += 1
-        bucket["total_s"] += duration_s
-        bucket["input_tokens"] += int(input_tokens or 0)
-        bucket["output_tokens"] += int(output_tokens or 0)
-        if error:
-            bucket["errors"] += 1
-
-    def record_stage_calls(self, name: str, count: int, total_s: float):
-        """Record a stage that bundles many external calls (e.g. OCR)."""
-        entry = self._stages.setdefault(name, {})
-        entry["call_count"] = entry.get("call_count", 0) + count
-        entry["call_total_s"] = round(entry.get("call_total_s", 0.0) + total_s, 3)
-        if entry["call_count"]:
-            entry["call_avg_s"] = round(entry["call_total_s"] / entry["call_count"], 3)
-        self._save()
-
-    def record_counts(self, **counts):
-        self._counts.update(counts)
-        self._save()
-
-    def finalize(self):
-        self._save()
-
-    def _metrics(self) -> dict:
-        per_model = {}
-        tot_in = tot_out = 0
-        for m, d in self._llm_calls.items():
-            in_t = d.get("input_tokens", 0)
-            out_t = d.get("output_tokens", 0)
-            tot_in += in_t
-            tot_out += out_t
-            per_model[m] = {
-                "count": d["count"],
-                "total_s": round(d["total_s"], 3),
-                "avg_s": round(d["total_s"] / d["count"], 3) if d["count"] else 0,
-                "errors": d["errors"],
-                "input_tokens": in_t,
-                "output_tokens": out_t,
-                "total_tokens": in_t + out_t,
-            }
-        return {
-            "total_runtime_s": round(time.perf_counter() - self._t0, 3),
-            "stages": self._stages,
-            "counts": self._counts,
-            "llm_calls": per_model,
-            "token_totals": {
-                "input_tokens": tot_in,
-                "output_tokens": tot_out,
-                "total_tokens": tot_in + tot_out,
-            },
-        }
-
-    def _save(self):
-        payload = {
-            "paper_id": self.paper_id,
-            "metrics": self._metrics(),
-            "events": self.log_data,
-        }
-        with open(os.path.join(self._dir, self.filename), "w") as f:
-            json.dump(payload, f, indent=2)
-
-
-# ─── TOC detection & extraction ───────────────────────────────────────────────
+# TOC detection & extraction
 
 def toc_detector_single_page(content, model=None):
     model = _model_name_fast  # simple yes/no — always use fast model
@@ -892,7 +771,7 @@ def toc_detector_single_page(content, model=None):
     return extract_json(response).get("toc_detected", "no")
 
 
-def find_toc_pages(start_page_index, page_list, opt, logger=None):
+def find_toc_pages(start_page_index, page_list, opt):
     last_page_is_yes = False
     toc_page_list = []
     i = start_page_index
@@ -1045,7 +924,7 @@ def toc_index_extractor(toc, content, model=None):
     return extract_json(response)
 
 
-# ─── Page number assignment ───────────────────────────────────────────────────
+# Page number assignment
 
 def add_page_number_to_toc(part, structure, model=None):
     prompt = get_prompt(
@@ -1060,7 +939,7 @@ def add_page_number_to_toc(part, structure, model=None):
     return result
 
 
-# ─── No-TOC tree generation ──────────────────────────────────────────────────
+# No-TOC tree generation
 
 def generate_toc_init(part, model=None, toc_hint=None):
     if toc_hint:
@@ -1091,9 +970,9 @@ def generate_toc_continue(toc_content, part, model=None):
     raise RuntimeError(f"generate_toc_continue: finish_reason={finish_reason}")
 
 
-# ─── TOC processing paths ────────────────────────────────────────────────────
+# TOC processing paths
 
-def process_no_toc(page_list, start_index=1, model=None, logger=None, toc_hint=None):
+def process_no_toc(page_list, start_index=1, model=None, toc_hint=None):
     """Extract section structure from page text via chunked LLM passes.
 
     If `toc_hint` is provided (a TOC found on a page in the document),
@@ -1111,27 +990,24 @@ def process_no_toc(page_list, start_index=1, model=None, logger=None, toc_hint=N
         token_lengths.append(count_tokens(text, model))
 
     group_texts = page_list_to_group_text(page_contents, token_lengths)
-    if logger:
-        logger.info(f"process_no_toc: {len(group_texts)} group(s)"
-                    + (f" with TOC hint ({len(toc_hint)} chars)" if toc_hint else ""))
+    log.debug("process_no_toc: %d group(s)%s", len(group_texts),
+              f" with TOC hint ({len(toc_hint)} chars)" if toc_hint else "")
 
     toc = generate_toc_init(group_texts[0], model, toc_hint=toc_hint)
     for group_text in group_texts[1:]:
         additional = generate_toc_continue(toc, group_text, model)
         toc.extend(additional)
 
-    if logger:
-        logger.info(f"generate_toc result: {toc}")
+    log.debug("generate_toc result: %s", toc)
 
     return convert_physical_index_to_int(toc)
 
 
 def process_toc_no_page_numbers(
-    toc_content, toc_page_list, page_list, start_index=1, model=None, logger=None
+    toc_content, toc_page_list, page_list, start_index=1, model=None,
 ):
     toc_structured = toc_transformer(toc_content, model)
-    if logger:
-        logger.info(f"toc_transformer: {toc_structured}")
+    log.debug("toc_transformer: %s", toc_structured)
 
     page_contents = []
     token_lengths = []
@@ -1145,15 +1021,13 @@ def process_toc_no_page_numbers(
         token_lengths.append(count_tokens(text, model))
 
     group_texts = page_list_to_group_text(page_contents, token_lengths)
-    if logger:
-        logger.info(f"process_toc_no_page_numbers: {len(group_texts)} group(s)")
+    log.debug("process_toc_no_page_numbers: %d group(s)", len(group_texts))
 
     toc_with_pages = copy.deepcopy(toc_structured)
     for group_text in group_texts:
         toc_with_pages = add_page_number_to_toc(group_text, toc_with_pages, model)
 
-    if logger:
-        logger.info(f"add_page_number_to_toc: {toc_with_pages}")
+    log.debug("add_page_number_to_toc: %s", toc_with_pages)
 
     return convert_physical_index_to_int(toc_with_pages)
 
@@ -1239,11 +1113,10 @@ def add_page_offset_to_toc_json(data, offset):
 
 def process_toc_with_page_numbers(
     toc_content, toc_page_list, page_list,
-    toc_check_page_num=None, model=None, logger=None,
+    toc_check_page_num=None, model=None,
 ):
     toc_with_pages = toc_transformer(toc_content, model)
-    if logger:
-        logger.info(f"toc_with_page_number: {toc_with_pages}")
+    log.debug("toc_with_page_number: %s", toc_with_pages)
 
     toc_no_pages = remove_page_number(copy.deepcopy(toc_with_pages))
 
@@ -1258,24 +1131,20 @@ def process_toc_with_page_numbers(
         )
 
     toc_with_physical = toc_index_extractor(toc_no_pages, main_content, model)
-    if logger:
-        logger.info(f"toc_with_physical_index: {toc_with_physical}")
+    log.debug("toc_with_physical_index: %s", toc_with_physical)
 
     toc_with_physical = convert_physical_index_to_int(toc_with_physical)
 
     pairs = extract_matching_page_pairs(toc_with_pages, toc_with_physical, start_page)
-    if logger:
-        logger.info(f"matching_pairs: {pairs}")
+    log.debug("matching_pairs: %s", pairs)
 
     offset = calculate_page_offset(pairs)
-    if logger:
-        logger.info(f"offset: {offset}")
+    log.debug("offset: %s", offset)
 
     toc_with_pages = add_page_offset_to_toc_json(toc_with_pages, offset)
     toc_with_pages = process_none_page_numbers(toc_with_pages, page_list, model=model)
 
-    if logger:
-        logger.info(f"final toc_with_page_number: {toc_with_pages}")
+    log.debug("final toc_with_page_number: %s", toc_with_pages)
 
     return toc_with_pages
 
@@ -1324,7 +1193,7 @@ def check_toc(page_list, opt):
     }
 
 
-# ─── Verification & correction ───────────────────────────────────────────────
+# Verification & correction
 
 async def check_title_appearance(item, page_list, start_index=1, model=None):
     model = _model_name_fast  # simple yes/no — always use fast model
@@ -1357,7 +1226,7 @@ async def check_title_appearance_in_start(title, page_text, model=None):
     return extract_json(response).get("start_begin", "no")
 
 
-async def check_title_appearance_in_start_concurrent(structure, page_list, model=None, logger=None):
+async def check_title_appearance_in_start_concurrent(structure, page_list, model=None):
     for item in structure:
         if item.get("physical_index") is None:
             item["appear_start"] = "no"
@@ -1427,7 +1296,7 @@ async def single_toc_item_index_fixer(section_title, content, model=None):
 
 
 async def fix_incorrect_toc(
-    toc, page_list, incorrect_results, start_index=1, model=None, logger=None
+    toc, page_list, incorrect_results, start_index=1, model=None,
 ):
     incorrect_indices = {r["list_index"] for r in incorrect_results}
     end_index = len(page_list) + start_index - 1
@@ -1503,7 +1372,7 @@ async def fix_incorrect_toc(
 
 async def fix_incorrect_toc_with_retries(
     toc, page_list, incorrect_results,
-    start_index=1, max_attempts=3, model=None, logger=None,
+    start_index=1, max_attempts=3, model=None,
 ):
     current_toc = toc
     current_incorrect = incorrect_results
@@ -1512,54 +1381,51 @@ async def fix_incorrect_toc_with_retries(
         if not current_incorrect:
             break
         current_toc, current_incorrect = await fix_incorrect_toc(
-            current_toc, page_list, current_incorrect, start_index, model, logger
+            current_toc, page_list, current_incorrect, start_index, model,
         )
 
     return current_toc, current_incorrect
 
 
-# ─── Main orchestration ──────────────────────────────────────────────────────
+# Main orchestration
 
 async def meta_processor(
     page_list, mode=None, toc_content=None, toc_page_list=None,
-    start_index=1, opt=None, logger=None,
+    start_index=1, opt=None,
 ):
     if mode == "process_toc_with_page_numbers":
         toc = process_toc_with_page_numbers(
             toc_content, toc_page_list, page_list,
-            toc_check_page_num=opt.toc_check_page_num, model=opt.model, logger=logger,
+            toc_check_page_num=opt.toc_check_page_num, model=opt.model,
         )
     elif mode == "process_toc_no_page_numbers":
         toc = process_toc_no_page_numbers(
             toc_content, toc_page_list, page_list,
-            model=opt.model, logger=logger,
+            model=opt.model,
         )
     else:
-        # If a TOC was detected but we're in the process_no_toc branch still pass the
-        # TOC text as a hint so chunked extraction benefits from it
         toc = process_no_toc(
-            page_list, start_index=start_index, model=opt.model, logger=logger,
+            page_list, start_index=start_index, model=opt.model,
             toc_hint=toc_content,
         )
 
     toc = [item for item in toc if item.get("physical_index") is not None]
     toc = validate_and_truncate_physical_indices(
-        toc, len(page_list), start_index=start_index, logger=logger,
+        toc, len(page_list), start_index=start_index,
     )
 
     accuracy, incorrect = await verify_toc(
         page_list, toc, start_index=start_index, model=opt.model,
     )
 
-    if logger:
-        logger.info({"mode": mode, "accuracy": accuracy, "incorrect_count": len(incorrect)})
+    log.debug("meta_processor mode=%s accuracy=%.2f incorrect=%d", mode, accuracy, len(incorrect))
 
     if accuracy == 1.0 and not incorrect:
         return toc
     if accuracy > 0.6 and incorrect:
         toc, _ = await fix_incorrect_toc_with_retries(
             toc, page_list, incorrect,
-            start_index=start_index, max_attempts=3, model=opt.model, logger=logger,
+            start_index=start_index, max_attempts=3, model=opt.model,
         )
         return toc
 
@@ -1568,14 +1434,13 @@ async def meta_processor(
         return await meta_processor(
             page_list, mode="process_toc_no_page_numbers",
             toc_content=toc_content, toc_page_list=toc_page_list,
-            start_index=start_index, opt=opt, logger=logger,
+            start_index=start_index, opt=opt,
         )
     elif mode == "process_toc_no_page_numbers":
-        # Preserve the TOC text as a hint when falling back to chunked extraction.
         return await meta_processor(
             page_list, mode="process_no_toc",
             toc_content=toc_content,
-            start_index=start_index, opt=opt, logger=logger,
+            start_index=start_index, opt=opt,
         )
     else:
         # Fail gracefully 
@@ -1594,19 +1459,37 @@ async def meta_processor(
         }]
 
 
-async def process_large_node_recursively(node, page_list, opt=None, logger=None):
+_MAX_SUBDIVISION_DEPTH = 3
+
+
+async def process_large_node_recursively(node, page_list, opt=None, _depth=0):
+    if _depth >= _MAX_SUBDIVISION_DEPTH:
+        log.warning(
+            "Max subdivision depth (%d) reached for node '%s' (pages %d–%d). "
+            "Stopping further splitting.",
+            _MAX_SUBDIVISION_DEPTH, node.get("title", "?"),
+            node["start_index"], node["end_index"],
+        )
+        return node
+
+    # Capture the parent's structural page span BEFORE any mutation.
+    # start_index/end_index are section boundaries — the overlap "cushion"
+    # pages used later by add_node_text() for summarization context are not
+    # present here, so this comparison is clean.
+    parent_span = node["end_index"] - node["start_index"]
+
     node_pages = page_list[node["start_index"] - 1: node["end_index"]]
     token_num = sum(p[1] for p in node_pages)
 
-    if (node["end_index"] - node["start_index"] > opt.max_page_num_each_node
+    if (parent_span > opt.max_page_num_each_node
             and token_num >= opt.max_token_num_each_node):
 
         sub_toc = await meta_processor(
             node_pages, mode="process_no_toc",
-            start_index=node["start_index"], opt=opt, logger=logger,
+            start_index=node["start_index"], opt=opt,
         )
         sub_toc = await check_title_appearance_in_start_concurrent(
-            sub_toc, page_list, model=opt.model, logger=logger,
+            sub_toc, page_list, model=opt.model,
         )
 
         valid = [item for item in sub_toc if item.get("physical_index") is not None]
@@ -1618,9 +1501,28 @@ async def process_large_node_recursively(node, page_list, opt=None, logger=None)
             node["nodes"] = post_processing(valid, node["end_index"])
             node["end_index"] = valid[0]["start_index"] if valid else node["end_index"]
 
+        # Progress check: every child's page span must be strictly smaller
+        # than the parent's original span. If the LLM produced a degenerate
+        # split (e.g. a single child covering the same range), stop here
+        # rather than recursing forever.
+        if node.get("nodes"):
+            stalled = [
+                c for c in node["nodes"]
+                if c["end_index"] - c["start_index"] >= parent_span
+            ]
+            if stalled:
+                log.warning(
+                    "Subdivision made no progress for node '%s' (pages %d–%d): "
+                    "%d child(ren) have span >= parent. Keeping children as leaves.",
+                    node.get("title", "?"), node["start_index"], node["end_index"],
+                    len(stalled),
+                )
+                return node
+
     if node.get("nodes"):
         await asyncio.gather(
-            *[process_large_node_recursively(child, page_list, opt, logger) for child in node["nodes"]]
+            *[process_large_node_recursively(child, page_list, opt, _depth=_depth + 1)
+              for child in node["nodes"]]
         )
 
     return node
@@ -1710,21 +1612,20 @@ def generate_doc_description(structure, model=None):
     return llm_completion(model, prompt)
 
 
-# ─── Public entry points ─────────────────────────────────────────────────────
+# Public entry points
 
 async def build_tree_async(
-    pdf_path: str, config: dict, logger: "JsonLogger | None" = None,
+    pdf_path: str, config: dict,
 ) -> DocumentTree:
     """Build a document tree from a PDF. Returns a DocumentTree (no enrichment).
 
-    If logger is provided it is used for events + metrics else one is
-    created with paper_id derived from the PDF filename. 
-    The logger is also registered as the module-level logger so LLM helpers record into it.
+    LLM call metrics are recorded into the current PipelineMetrics (if set
+    via set_current_metrics before calling this function).
     """
+    metrics = get_current_metrics()
     tree_cfg = config["tree"]
     model = config["tree_llm"]["model"]
 
-    # Build an opt namespace matching what PageIndex functions expect
     opt = SimpleNamespace(
         model=model,
         toc_check_page_num=tree_cfg["toc_check_pages"],
@@ -1739,89 +1640,77 @@ async def build_tree_async(
     _init_clients(config)
 
     paper_id = Path(pdf_path).stem
-    if logger is None:
-        logger = JsonLogger(paper_id=paper_id)
-    set_logger(logger)
-
     page_list = get_page_tokens(pdf_path, model=model)
 
     if is_likely_scanned(page_list):
-        logging.warning(
-            f"PDF appears to be scanned (low extractable text). "
-            f"Tree quality may be poor — consider OCR preprocessing."
+        log.warning(
+            "PDF appears to be scanned (low extractable text). "
+            "Tree quality may be poor — consider OCR preprocessing."
         )
 
-    logger.info({"total_pages": len(page_list), "total_tokens": sum(p[1] for p in page_list)})
-    logger.record_counts(total_pages=len(page_list))
+    total_tokens = sum(p[1] for p in page_list)
+    log.info("Pages: %d, tokens: %d", len(page_list), total_tokens)
+    if metrics:
+        metrics.record_counts(total_pages=len(page_list))
 
     # 1. Check for TOC
-    with logger.stage("check_toc"):
-        check_toc_result = check_toc(page_list, opt)
-    logger.info({"check_toc_result": str(check_toc_result)})
+    check_toc_result = check_toc(page_list, opt)
+    log.debug("check_toc_result: %s", check_toc_result)
 
     has_toc = (check_toc_result.get("toc_content")
                and check_toc_result["toc_content"].strip())
 
-    with logger.stage("structure_generation"):
-        if has_toc and check_toc_result["page_index_given_in_toc"] == "yes":
-            toc = await meta_processor(
-                page_list, mode="process_toc_with_page_numbers",
-                start_index=1,
-                toc_content=check_toc_result["toc_content"],
-                toc_page_list=check_toc_result["toc_page_list"],
-                opt=opt, logger=logger,
-            )
-        elif has_toc:
-            toc = await meta_processor(
-                page_list, mode="process_toc_no_page_numbers",
-                start_index=1,
-                toc_content=check_toc_result["toc_content"],
-                toc_page_list=check_toc_result["toc_page_list"],
-                opt=opt, logger=logger,
-            )
-        else:
-            toc = await meta_processor(
-                page_list, mode="process_no_toc",
-                start_index=1, opt=opt, logger=logger,
-            )
-
-    with logger.stage("title_appearance_verification"):
-        toc = add_preface_if_needed(toc)
-        toc = await check_title_appearance_in_start_concurrent(
-            toc, page_list, model=opt.model, logger=logger,
+    if has_toc and check_toc_result["page_index_given_in_toc"] == "yes":
+        toc = await meta_processor(
+            page_list, mode="process_toc_with_page_numbers",
+            start_index=1,
+            toc_content=check_toc_result["toc_content"],
+            toc_page_list=check_toc_result["toc_page_list"],
+            opt=opt,
+        )
+    elif has_toc:
+        toc = await meta_processor(
+            page_list, mode="process_toc_no_page_numbers",
+            start_index=1,
+            toc_content=check_toc_result["toc_content"],
+            toc_page_list=check_toc_result["toc_page_list"],
+            opt=opt,
+        )
+    else:
+        toc = await meta_processor(
+            page_list, mode="process_no_toc",
+            start_index=1, opt=opt,
         )
 
-    with logger.stage("post_processing_and_subdivision"):
-        valid_toc = [item for item in toc if item.get("physical_index") is not None]
-        tree_nodes = post_processing(valid_toc, len(page_list))
-        await asyncio.gather(
-            *[process_large_node_recursively(node, page_list, opt, logger) for node in tree_nodes]
-        )
+    toc = add_preface_if_needed(toc)
+    toc = await check_title_appearance_in_start_concurrent(
+        toc, page_list, model=opt.model,
+    )
 
-        if opt.if_add_node_id == "yes":
-            write_node_id(tree_nodes)
+    valid_toc = [item for item in toc if item.get("physical_index") is not None]
+    tree_nodes = post_processing(valid_toc, len(page_list))
+    await asyncio.gather(
+        *[process_large_node_recursively(node, page_list, opt) for node in tree_nodes]
+    )
 
-    # Add summaries (with optional adjacent-page overlap context + fidelity verify)
+    if opt.if_add_node_id == "yes":
+        write_node_id(tree_nodes)
+
     if opt.if_add_node_summary == "yes":
-        with logger.stage("summary_generation"):
-            overlap_pages = tree_cfg.get("summary_overlap_pages", 1)
-            add_node_text(tree_nodes, page_list, overlap_pages=overlap_pages)
-            await generate_summaries_for_structure(tree_nodes, model=model)
+        overlap_pages = tree_cfg.get("summary_overlap_pages", 1)
+        add_node_text(tree_nodes, page_list, overlap_pages=overlap_pages)
+        await generate_summaries_for_structure(tree_nodes, model=model)
 
         if tree_cfg.get("verify_summaries", True):
-            with logger.stage("summary_verification"):
-                await verify_summaries_for_structure(tree_nodes, model=model)
+            await verify_summaries_for_structure(tree_nodes, model=model)
 
         remove_structure_text(tree_nodes)
 
-    # Doc description
     doc_description = None
     if opt.if_add_doc_description == "yes":
-        with logger.stage("doc_description"):
-            clean = create_clean_structure_for_description(tree_nodes)
-            doc_description = generate_doc_description(clean, model=model)
+        clean = create_clean_structure_for_description(tree_nodes)
+        doc_description = generate_doc_description(clean, model=model)
 
-    # Format and convert to Pydantic models
     tree_nodes = format_structure(
         tree_nodes,
         order=["title", "node_id", "start_index", "end_index", "summary", "nodes"],
@@ -1830,7 +1719,8 @@ async def build_tree_async(
     root_nodes = _dicts_to_tree_nodes(tree_nodes)
 
     node_count = sum(1 for _ in _flatten_nodes(root_nodes))
-    logger.record_counts(node_count=node_count)
+    if metrics:
+        metrics.record_counts(node_count=node_count)
 
     return DocumentTree(
         paper_id=paper_id,

@@ -9,7 +9,7 @@ Na⁺ solvation energy of candidate molecules (binding energy in the first coord
 xTB pre-screening of thousands of structural analogues before sending shortlist to ORCA — ✅ seconds per molecule
 Classical MD ionic conductivity estimates of candidate solvent mixtures — ✅ LAMMPS with existing force fields
 
-The full agentic loop is feasible: literature → identify known ethers and measured oxidation potentials → train a calibration relationship between computed HOMO and experimental oxidation potential → generate fluorinated/modified ether analogues with RDKit → xTB pre-screen → ORCA shortlist → rank → propose candidates above 4.2V threshold with good Na⁺ solvation. This is a complete, publishable methodology.
+The full agentic loop is feasible: literature -> identify known ethers and measured oxidation potentials -> train a calibration relationship between computed HOMO and experimental oxidation potential -> generate fluorinated/modified ether analogues with RDKit -> xTB pre-screen -> ORCA shortlist -> rank -> propose candidates above 4.2V threshold with good Na⁺ solvation. This is a complete, publishable methodology.
 Verdict: Fully tractable locally. This is your primary target.
 
 

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import argparse
 import base64
@@ -12,10 +11,7 @@ VLLM_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = VLLM_DIR / "results"
 INSTANCES_DIR = VLLM_DIR / "aws" / "instances"
 
-# Canonical chandra prompts — single source of truth shared with the ETL pipeline.
-# Put repo root on sys.path so `shared.prompts.chandra` resolves regardless of CWD.
-sys.path.insert(0, str(VLLM_DIR.parent))
-from shared.prompts.chandra import (  # noqa: E402
+from shared.prompts.chandra import (
     CHANDRA_OCR_LAYOUT_PROMPT,
     CHANDRA_OCR_PROMPT,
 )

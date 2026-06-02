@@ -9,12 +9,12 @@ the enricher produced.
 This module runs only when enrichment runs (gated by --skip-enrichment).
 """
 
-from __future__ import annotations
 import asyncio
 import logging
 from typing import Iterable
 
-from .node_schema import TreeNode, DocumentTree, VisualElement
+from shared.schemas import TreeNode, DocumentTree, VisualElement
+
 from .prompts import get_prompt
 from . import tree_builder
 

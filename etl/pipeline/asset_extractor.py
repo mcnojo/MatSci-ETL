@@ -1,10 +1,8 @@
-from __future__ import annotations
 from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 
 from .layout_detector import LayoutDetector, associate_captions
-from .node_schema import BoundingBox
 
 
 class AssetExtractor:
@@ -94,12 +92,12 @@ class AssetExtractor:
                 "element_id": element_id,
                 "element_type": label,
                 "page_index": page_1based,
-                "bbox": BoundingBox(
-                    x0=content_el.bbox_norm[0],
-                    y0=content_el.bbox_norm[1],
-                    x1=content_el.bbox_norm[2],
-                    y1=content_el.bbox_norm[3],
-                ),
+                "bbox": {
+                    "x0": content_el.bbox_norm[0],
+                    "y0": content_el.bbox_norm[1],
+                    "x1": content_el.bbox_norm[2],
+                    "y1": content_el.bbox_norm[3],
+                },
                 "asset_path": str(asset_path.resolve()),
                 "caption": caption_text,
                 "ocr_text": None,
