@@ -20,14 +20,16 @@ app.get("/api/papers", (_req, res) => {
   res.json(papers);
 });
 
-// Stream the source PDF referenced by a paper's tree.json (pdf_path is absolute).
-// Sandboxed to PROJECT_ROOT to prevent traversal.
+// Stream the source PDF referenced by a paper's tree.json.
+// pdf_path in tree.json is relative to the tree.json's directory (portable
+// artifact convention). Resolve against the tree's parent dir, then sandbox
+// to PROJECT_ROOT so a malicious artifact can't traverse out of the repo.
 app.get("/pdf/:paper", (req, res) => {
   const treePath = path.join(KB_DIR, req.params.paper, "tree.json");
   if (!fs.existsSync(treePath)) return res.sendStatus(404);
   const { pdf_path } = JSON.parse(fs.readFileSync(treePath, "utf8"));
   if (!pdf_path) return res.sendStatus(404);
-  const resolved = path.resolve(pdf_path);
+  const resolved = path.resolve(path.dirname(treePath), pdf_path);
   if (!resolved.startsWith(PROJECT_ROOT + path.sep)) return res.sendStatus(403);
   if (!fs.existsSync(resolved)) return res.sendStatus(404);
   res.type("application/pdf").sendFile(resolved);

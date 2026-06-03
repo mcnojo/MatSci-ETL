@@ -15,24 +15,14 @@ import uuid
 from pathlib import Path
 
 import click
-import yaml
 from rich.console import Console
-from temporalio.client import Client
-
 from prod.workflows.process_pdf import ProcessPdfWorkflow
 from prod.workflows.models import ProcessPdfWorkflowInput, ProcessPdfWorkflowOutput
 from prod.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
-from shared.vllm_resolve import resolve_config_urls
+from shared.config_loader import load_pipeline_config
+from shared.temporal_client import connect_temporal
 
 console = Console()
-
-
-def _load_config(config_path: str) -> dict:
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    cfg["_config_dir"] = str(Path(config_path).resolve().parent)
-    resolve_config_urls(cfg)
-    return cfg
 
 
 async def _run(
@@ -41,18 +31,18 @@ async def _run(
     skip_enrichment: bool,
     temporal_address: str,
 ):
-    client = await Client.connect(temporal_address)
+    client = await connect_temporal(temporal_address)
     console.print(f"Connected to Temporal at [bold]{temporal_address}[/bold]")
 
     t0 = time.perf_counter()
-    handles: list[tuple[str, str]] = []  # (document_id, workflow_id)
+    handles = []  # list of (document_id, typed WorkflowHandle)
 
     for pdf_path in pdf_paths:
         document_id = pdf_path.stem
         run_id = str(uuid.uuid4())
         workflow_id = f"process-pdf-{document_id}-{run_id}"
 
-        await client.start_workflow(
+        handle = await client.start_workflow(
             ProcessPdfWorkflow.run,
             ProcessPdfWorkflowInput(
                 document_id=document_id,
@@ -66,11 +56,10 @@ async def _run(
             execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
         )
         console.print(f"  Started [cyan]{document_id}[/cyan] -> {workflow_id}")
-        handles.append((document_id, workflow_id))
+        handles.append((document_id, handle))
 
     errors: list[str] = []
-    for document_id, workflow_id in handles:
-        handle = client.get_workflow_handle(workflow_id)
+    for document_id, handle in handles:
         try:
             result: ProcessPdfWorkflowOutput = await handle.result()
             console.print(
@@ -108,16 +97,16 @@ def main(pdf, pdf_dir, config_path, skip_enrichment, temporal_address, verbose):
     for noisy in ("httpcore", "httpx", "LiteLLM", "matplotlib", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    config = _load_config(config_path)
+    config = load_pipeline_config(config_path)
 
     if pdf and pdf_dir:
         console.print("[red]Provide --pdf or --pdf-dir, not both.[/red]")
         sys.exit(1)
 
     if pdf:
-        pdfs = [Path(pdf)]
+        pdfs = [Path(pdf).resolve()]
     elif pdf_dir:
-        pdfs = sorted(Path(pdf_dir).glob("*.pdf"))
+        pdfs = sorted(p.resolve() for p in Path(pdf_dir).glob("*.pdf"))
         console.print(f"Found {len(pdfs)} PDFs in {pdf_dir}")
     else:
         console.print("[red]Provide --pdf or --pdf-dir.[/red]")

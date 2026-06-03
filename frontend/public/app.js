@@ -5,12 +5,13 @@ const setStatus = (m) => { $("#status").textContent = m; };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// asset_path in tree.json is absolute (/Users/.../etl/kb/<paper>/assets/...).
-// Strip everything up to "/kb/" so /kb/* statics handle it.
-function assetUrl(absPath) {
-  if (!absPath) return "";
-  const i = absPath.indexOf("/kb/");
-  return i === -1 ? absPath : absPath.slice(i);
+// Paths in tree.json (asset_path, page_images) are relative to the tree.json's
+// directory — portable artifact convention. Resolve against the current tree
+// URL using the browser's URL constructor.
+let _treeBaseUrl = null;
+function assetUrl(relPath) {
+  if (!relPath) return "";
+  return new URL(relPath, _treeBaseUrl).pathname;
 }
 
 const RAW_CAP = 2000; // chandra often emits multi-KB repeating x/y blobs after </analyze>
@@ -168,7 +169,9 @@ async function renderPdf(paper) {
 
 async function loadPaper(paper) {
   setStatus("loading tree…");
-  const tree = await (await fetch(`/kb/${paper}/tree.json`)).json();
+  const treeUrl = `/kb/${paper}/tree.json`;
+  _treeBaseUrl = new URL(treeUrl, location.href);
+  const tree = await (await fetch(treeUrl)).json();
   $("#tree").innerHTML = renderTree(tree.root_nodes);
   renderMath($("#tree"));
   await renderPdf(paper);

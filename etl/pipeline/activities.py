@@ -1,39 +1,48 @@
 """Temporal activity definitions for the PDF pipeline.
 
-Each activity is a thin wrapper around the core pipeline functions in this
-package. Pydantic I/O models define the Temporal serialization contract.
+Stage-level activities (load_pages, extract_assets, assign_elements, finalize)
+and per-call activities (llm_text_call, chandra_vision_call). The workflow
+orchestrates between them and drives tree construction via tree_logic.build_tree
+with a call_llm closure that schedules llm_text_call_activity per call.
 """
 
+import base64
 import json
+import os
+import time
 from pathlib import Path
 
+import pymupdf
+from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
+from prod.workflows.models import (
+    ChandraCallInput,
+    ChandraCallOutput,
+    LlmTextCallInput,
+    LlmTextCallOutput,
+)
 from shared.schemas import DocumentTree
 
 from .asset_extractor import AssetExtractor
-from .enricher import Enricher, assign_elements_to_tree
-from .metrics import PipelineMetrics, set_current_metrics
-from .resummarizer import resummarize_with_figures
-from .tree_builder import build_tree_async
+from .enricher import assign_elements_to_tree
+from .llm_calls import execute_text_call
+from .tree_logic import count_tokens
 
 
-# I/O models
+# I/O models for stage-level activities
 
-class BuildTreeInput(BaseModel):
+class LoadPagesInput(BaseModel):
     model_config = ConfigDict(frozen=True)
     pdf_path: str
-    document_id: str
-    run_id: str
-    config: dict
 
 
-class BuildTreeOutput(BaseModel):
+class LoadPagesOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
-    tree: DocumentTree
-    node_count: int
+    page_list: list[tuple[str, int]]  # (page_text, token_count) per physical page
     total_pages: int
+    is_likely_scanned: bool
 
 
 class ExtractAssetsInput(BaseModel):
@@ -52,17 +61,6 @@ class ExtractAssetsOutput(BaseModel):
     element_counts: dict[str, int]
 
 
-class EnrichOcrInput(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    page_elements: dict[int, list[dict]]
-    config: dict
-
-
-class EnrichOcrOutput(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    page_elements: dict[int, list[dict]]
-
-
 class AssignElementsInput(BaseModel):
     model_config = ConfigDict(frozen=True)
     tree: DocumentTree
@@ -73,17 +71,6 @@ class AssignElementsInput(BaseModel):
 
 
 class AssignElementsOutput(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tree: DocumentTree
-
-
-class ResummarizeInput(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tree: DocumentTree
-    config: dict
-
-
-class ResummarizeOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
     tree: DocumentTree
 
@@ -100,25 +87,51 @@ class FinalizeOutput(BaseModel):
     tree_path: str
 
 
-# Helpers
+# PyMuPDF helpers (used only by load_pages_activity)
 
-def _flatten(nodes):
-    for n in nodes:
-        yield n
-        yield from _flatten(n.nodes)
+def _get_page_tokens(pdf_path: str) -> list[tuple[str, int]]:
+    doc = pymupdf.open(pdf_path)
+    page_list = []
+    for page in doc:
+        text = page.get_text()
+        page_list.append((text, count_tokens(text)))
+    doc.close()
+    return page_list
 
 
-# Activities
+def _is_likely_scanned(page_list: list[tuple[str, int]], threshold: int = 30) -> bool:
+    word_counts = [len(text.split()) for text, _ in page_list]
+    if not word_counts:
+        return True
+    median_words = sorted(word_counts)[len(word_counts) // 2]
+    return median_words < threshold
 
-@activity.defn(name="process-pdf_build-tree")
-async def build_tree_activity(input: BuildTreeInput) -> BuildTreeOutput:
-    set_current_metrics(PipelineMetrics(input.document_id, input.run_id))
-    try:
-        tree = await build_tree_async(input.pdf_path, input.config)
-        node_count = sum(1 for _ in _flatten(tree.root_nodes))
-        return BuildTreeOutput(tree=tree, node_count=node_count, total_pages=tree.total_pages)
-    finally:
-        set_current_metrics(None)
+
+def _image_to_b64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def _openai_usage(response) -> tuple[int, int]:
+    u = getattr(response, "usage", None)
+    if not u:
+        return (0, 0)
+    return (
+        getattr(u, "prompt_tokens", 0) or 0,
+        getattr(u, "completion_tokens", 0) or 0,
+    )
+
+
+# Stage-level activities
+
+@activity.defn(name="process-pdf_load-pages")
+async def load_pages_activity(input: LoadPagesInput) -> LoadPagesOutput:
+    page_list = _get_page_tokens(input.pdf_path)
+    return LoadPagesOutput(
+        page_list=page_list,
+        total_pages=len(page_list),
+        is_likely_scanned=_is_likely_scanned(page_list),
+    )
 
 
 @activity.defn(name="process-pdf_extract-assets")
@@ -140,14 +153,9 @@ async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOut
         for e in elems:
             by_type[e["element_type"]] = by_type.get(e["element_type"], 0) + 1
 
-    return ExtractAssetsOutput(page_elements=page_elements, total_elements=total, element_counts=by_type)
-
-
-@activity.defn(name="process-pdf_enrich-ocr")
-async def enrich_ocr_activity(input: EnrichOcrInput) -> EnrichOcrOutput:
-    enricher = Enricher(input.config)
-    page_elements = await enricher.enrich_all(input.page_elements, input.config)
-    return EnrichOcrOutput(page_elements=page_elements)
+    return ExtractAssetsOutput(
+        page_elements=page_elements, total_elements=total, element_counts=by_type,
+    )
 
 
 @activity.defn(name="process-pdf_assign-elements")
@@ -164,29 +172,106 @@ async def assign_elements_activity(input: AssignElementsInput) -> AssignElements
     return AssignElementsOutput(tree=tree)
 
 
-@activity.defn(name="process-pdf_resummarize")
-async def resummarize_activity(input: ResummarizeInput) -> ResummarizeOutput:
-    tree = await resummarize_with_figures(input.tree)
-    return ResummarizeOutput(tree=tree)
+_PATH_FIELDS: frozenset[str] = frozenset({"pdf_path", "asset_path"})
+_PATH_LIST_FIELDS: frozenset[str] = frozenset({"page_images"})
+
+
+def _portablize_paths(obj, anchor: Path) -> None:
+    """In-place: rewrite known path fields to be relative to `anchor`.
+
+    Only touches absolute values in fields known to hold filesystem paths
+    (pdf_path, asset_path, page_images). Leaves content fields untouched.
+    Already-relative values pass through unchanged.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in _PATH_FIELDS and isinstance(v, str) and Path(v).is_absolute():
+                obj[k] = os.path.relpath(v, anchor)
+            elif k in _PATH_LIST_FIELDS and isinstance(v, list):
+                obj[k] = [
+                    os.path.relpath(p, anchor)
+                    if isinstance(p, str) and Path(p).is_absolute() else p
+                    for p in v
+                ]
+            else:
+                _portablize_paths(v, anchor)
+    elif isinstance(obj, list):
+        for item in obj:
+            _portablize_paths(item, anchor)
 
 
 @activity.defn(name="process-pdf_finalize")
 async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
     tree_path = Path(input.output_path)
     tree_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tree_data = input.tree.model_dump()
+    _portablize_paths(tree_data, tree_path.parent)
+
     indent = 2 if input.pretty_print else None
     with open(tree_path, "w", encoding="utf-8") as f:
-        json.dump(input.tree.model_dump(), f, indent=indent, ensure_ascii=False)
+        json.dump(tree_data, f, indent=indent, ensure_ascii=False)
     return FinalizeOutput(tree_path=str(tree_path))
+
+
+# Per-call activities
+
+@activity.defn(name="process-pdf_llm-text-call")
+async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
+    activity.heartbeat()
+    result = await execute_text_call(
+        input.config, input.model, input.prompt,
+        json_mode=input.json_mode, temperature=input.temperature,
+    )
+    return LlmTextCallOutput(
+        model=result["model"],
+        content=result["content"],
+        finish_reason=result["finish_reason"],
+        started_at=result["started_at"],
+        ended_at=result["ended_at"],
+        input_tokens=result["input_tokens"],
+        output_tokens=result["output_tokens"],
+    )
+
+
+@activity.defn(name="process-pdf_chandra-vision-call")
+async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOutput:
+    activity.heartbeat()
+    b64 = _image_to_b64(input.image_path)
+    client = AsyncOpenAI(base_url=input.base_url, api_key=input.api_key)
+    started_at = time.time()
+    response = await client.chat.completions.create(
+        model=input.model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    {"type": "text", "text": input.prompt},
+                ],
+            },
+        ],
+        max_tokens=input.max_tokens,
+        temperature=0.0,
+    )
+    ended_at = time.time()
+    in_t, out_t = _openai_usage(response)
+    return ChandraCallOutput(
+        content=response.choices[0].message.content or "",
+        started_at=started_at,
+        ended_at=ended_at,
+        input_tokens=in_t,
+        output_tokens=out_t,
+    )
 
 
 # Registry
 
 activities = [
-    build_tree_activity,
+    load_pages_activity,
     extract_assets_activity,
-    enrich_ocr_activity,
     assign_elements_activity,
-    resummarize_activity,
     finalize_activity,
+    llm_text_call_activity,
+    chandra_vision_call_activity,
 ]

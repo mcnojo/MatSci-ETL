@@ -11,12 +11,12 @@ import logging
 
 import click
 import yaml
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from etl.pipeline.activities import activities
 from prod.task_queues import CPU_TASK_QUEUE, GPU_TASK_QUEUE
 from prod.workflows.process_pdf import ProcessPdfWorkflow
+from shared.temporal_client import connect_temporal
 
 log = logging.getLogger("worker")
 
@@ -27,7 +27,7 @@ async def run_worker(
     max_concurrent_cpu: int,
     max_concurrent_gpu: int,
 ):
-    client = await Client.connect(temporal_address, namespace=temporal_namespace)
+    client = await connect_temporal(temporal_address, namespace=temporal_namespace)
     log.info(
         "Connected to Temporal at %s (namespace=%s)",
         temporal_address, temporal_namespace,

@@ -1,113 +1,17 @@
-import asyncio
-import base64
+"""Tree enrichment: assign visual elements to their owning nodes.
+
+Per-element OCR happens via the chandra_vision_call activity orchestrated by the workflow,
+producing the `ocr_text` / `ocr_parsed` fields. 
+This module takes the result and grafts elements onto the DocumentTree.
+"""
+
 import re
-import time
 from pathlib import Path
-from openai import AsyncOpenAI
 
 from shared.schemas import TreeNode, DocumentTree, VisualElement, NodeSource
-from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
 
 from .chem_extractor import extract_chem_entities, load_seed_entities
-from .chandra_parser import parse as parse_chandra
-from .metrics import get_current_metrics
 
-
-def _image_to_b64(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-
-def _record_vision_call(
-    label: str, duration_s: float, errored: bool,
-    input_tokens: int = 0, output_tokens: int = 0,
-) -> None:
-    """Push an OCR call timing into the current PipelineMetrics if one is set."""
-    m = get_current_metrics()
-    if m is not None:
-        m.record_llm_call(
-            label, duration_s, error=errored,
-            input_tokens=input_tokens, output_tokens=output_tokens,
-        )
-
-
-def _openai_usage(response) -> tuple[int, int]:
-    u = getattr(response, "usage", None)
-    return (getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0) if u else (0, 0)
-
-
-class Enricher:
-    """Enriches visual elements via OCR."""
-
-    def __init__(self, config: dict):
-        vllm_cfg = config["vision_server"]
-        self.client = AsyncOpenAI(
-            base_url=vllm_cfg["base_url"],
-            api_key=vllm_cfg["api_key"],
-        )
-        self.ocr_model = vllm_cfg["ocr_model"]
-        self.semaphore = asyncio.Semaphore(
-            config["enrichment"]["max_concurrent_enrichments"]
-        )
-
-    async def _ocr_extract(self, image_path: str) -> str:
-        b64 = _image_to_b64(image_path)
-        t0 = time.perf_counter()
-        errored = False
-        usage = (0, 0)
-        try:
-            async with self.semaphore:
-                response = await self.client.chat.completions.create(
-                    model=self.ocr_model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                                {"type": "text", "text": CHANDRA_OCR_LAYOUT_PROMPT},
-                            ],
-                        },
-                    ],
-                    max_tokens=4096,
-                    temperature=0.0,
-                )
-            usage = _openai_usage(response)
-            return response.choices[0].message.content
-        except Exception:
-            errored = True
-            raise
-        finally:
-            _record_vision_call(
-                f"ocr:{self.ocr_model}", time.perf_counter() - t0, errored,
-                input_tokens=usage[0], output_tokens=usage[1],
-            )
-
-    async def enrich_element(self, element: dict, run_ocr: bool) -> dict:
-        if not (run_ocr and element.get("asset_path")):
-            return element
-        try:
-            element["ocr_text"] = await self._ocr_extract(element["asset_path"])
-        except Exception as e:
-            element["ocr_text"] = f"ERROR: {e}"
-            return element
-        element["ocr_parsed"] = parse_chandra(element["ocr_text"])
-        return element
-
-    async def enrich_all(
-        self, page_elements: dict[int, list[dict]], config: dict
-    ) -> dict[int, list[dict]]:
-        run_ocr = config["enrichment"]["run_ocr"]
-
-        all_tasks = []
-        for elements in page_elements.values():
-            for elem in elements:
-                all_tasks.append(self.enrich_element(elem, run_ocr))
-
-        await asyncio.gather(*all_tasks)
-        return page_elements
-
-
-# Tree enrichment: assign elements to nodes
 
 def flatten_tree(nodes: list[TreeNode]) -> list[TreeNode]:
     result = []

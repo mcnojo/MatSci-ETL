@@ -22,9 +22,10 @@ DEFAULT_RETRY_POLICY = RetryPolicy(
 )
 
 GPU_RETRY_POLICY = RetryPolicy(
-    maximum_attempts=3,
-    initial_interval=timedelta(seconds=5),
-    backoff_coefficient=2,  # 5s -> 10s -> 20s
+    maximum_attempts=5,
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2,
+    maximum_interval=timedelta(seconds=30),
 )
 
 NO_RETRY_POLICY = RetryPolicy(maximum_attempts=1)

@@ -25,6 +25,8 @@ from temporalio.client import Client
 from prod.workflows.process_pdf import ProcessPdfWorkflow
 from prod.workflows.models import ProcessPdfWorkflowInput
 from prod.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from shared.config_loader import load_pipeline_config
+from shared.temporal_client import connect_temporal
 
 log = logging.getLogger("ingestion_consumer")
 
@@ -109,8 +111,7 @@ async def poll_loop(
 def _load_pipeline_config(prod_cfg: dict) -> dict:
     """Load the ETL pipeline config and apply prod overrides."""
     base_path = Path(__file__).resolve().parents[2] / "etl" / "config" / "pipeline_config.yaml"
-    with open(base_path) as f:
-        config = yaml.safe_load(f)
+    config = load_pipeline_config(base_path)
 
     overrides = prod_cfg.get("pipeline_overrides", {})
     for section, values in overrides.items():
@@ -162,7 +163,7 @@ def main():
     )
 
     async def run():
-        temporal_client = await Client.connect(
+        temporal_client = await connect_temporal(
             temporal_address, namespace=temporal_namespace,
         )
         log.info("Connected to Temporal at %s", temporal_address)

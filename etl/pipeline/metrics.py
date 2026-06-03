@@ -1,108 +1,127 @@
-"""Pipeline run metrics via contextvars.
+"""Pipeline run metrics — workflow-side aggregation only.
 
-Activities set a PipelineMetrics instance at entry. LLM helpers and enrichment
-code record call timings into it without global state or explicit threading.
+Per-call activities (`llm_text_call_activity`, `chandra_vision_call_activity`)
+return `started_at` and `ended_at` Unix timestamps. The workflow's call_llm
+closure (`prod/workflows/process_pdf.py`) records each interval via
+`merge_call_record`. Before the workflow returns its output, it calls
+`finalize_summary`, which collapses the per-model interval lists into:
 
-Usage in activities:
-    metrics = PipelineMetrics(document_id, run_id)
-    set_current_metrics(metrics)
-    ...  # LLM calls automatically record into metrics
-    summary = metrics.summary()
+  - compute_time_s   — sum of per-call durations (a model's total work)
+  - wall_clock_time_s — union of intervals (real time the pipeline waited
+                        on this model, with concurrent calls counted once)
+  - max_concurrent   — peak overlap count
+  - avg_call_s       — compute_time_s / count
 
-Usage in LLM/OCR call sites:
-    m = get_current_metrics()
-    if m:
-        m.record_llm_call(model, duration, ...)
+Distinguishing these two is critical: when calls fan out concurrently (which
+the workflow does for tree-building, OCR, and re-summarization), the sum
+overcounts. Wall-clock is the metric that aligns with `total_runtime_s`.
 """
 
-import contextvars
-import logging
-import time
-from contextlib import contextmanager
 
-log = logging.getLogger("pipeline.metrics")
+def empty_summary(document_id: str, run_id: str) -> dict:
+    """Return the canonical empty summary shape used by the workflow as a base."""
+    return {
+        "document_id": document_id,
+        "run_id": run_id,
+        "total_runtime_s": 0.0,
+        "stages": {},
+        "counts": {},
+        "llm_calls": {},
+        "token_totals": {"input": 0, "output": 0, "total": 0},
+    }
 
 
-class PipelineMetrics:
-    """Collects LLM call stats and element counts for a single pipeline run."""
+def _empty_bucket() -> dict:
+    return {
+        "count": 0,
+        "errors": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "intervals": [],  # list[tuple[float, float]] of (started_at, ended_at)
+    }
 
-    def __init__(self, document_id: str, run_id: str):
-        self.document_id = document_id
-        self.run_id = run_id
-        self._t0 = time.perf_counter()
-        self._llm_calls: dict[str, dict] = {}
-        self._counts: dict[str, int] = {}
-        self._stages: dict[str, dict] = {}
 
-    def record_llm_call(
-        self,
-        model: str,
-        duration_s: float,
-        error: bool = False,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-    ):
-        bucket = self._llm_calls.setdefault(
-            model,
-            {"count": 0, "total_s": 0.0, "errors": 0, "input_tokens": 0, "output_tokens": 0},
+def merge_call_record(
+    summary: dict, model: str,
+    *,
+    started_at: float | None = None,
+    ended_at: float | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    errored: bool = False,
+) -> None:
+    """In-place merge of one LLM/OCR call into an existing summary dict.
+
+    On success: `started_at` and `ended_at` are appended as an interval.
+    On error:   no interval is recorded; only `count` and `errors` are bumped.
+    `finalize_summary` must be called once before the summary is reported.
+    """
+    bucket = summary["llm_calls"].setdefault(model, _empty_bucket())
+    bucket["count"] += 1
+    if errored:
+        bucket["errors"] += 1
+    elif started_at is not None and ended_at is not None:
+        bucket["intervals"].append((float(started_at), float(ended_at)))
+
+    bucket["input_tokens"] += int(input_tokens or 0)
+    bucket["output_tokens"] += int(output_tokens or 0)
+
+    totals = summary["token_totals"]
+    totals["input"] += int(input_tokens or 0)
+    totals["output"] += int(output_tokens or 0)
+    totals["total"] = totals["input"] + totals["output"]
+
+
+def _union_duration(intervals: list[tuple[float, float]]) -> float:
+    """Total length of the union of (start, end) intervals.
+
+    Concurrent (overlapping) calls contribute only the actual wall-clock
+    elapsed, not the sum of their durations.
+    """
+    if not intervals:
+        return 0.0
+    sorted_iv = sorted(intervals)
+    total = 0.0
+    cur_start, cur_end = sorted_iv[0]
+    for s, e in sorted_iv[1:]:
+        if s > cur_end:
+            total += cur_end - cur_start
+            cur_start, cur_end = s, e
+        else:
+            cur_end = max(cur_end, e)
+    total += cur_end - cur_start
+    return total
+
+
+def _peak_concurrency(intervals: list[tuple[float, float]]) -> int:
+    """Peak number of simultaneously in-flight intervals (sweep-line)."""
+    if not intervals:
+        return 0
+    # +1 at each start, -1 at each end; process starts before ends at ties
+    # so a back-to-back call (end_i == start_j) doesn't register as overlap.
+    events: list[tuple[float, int]] = []
+    for s, e in intervals:
+        events.append((s, 1))
+        events.append((e, -1))
+    events.sort(key=lambda ev: (ev[0], ev[1]))
+    cur = 0
+    peak = 0
+    for _, delta in events:
+        cur += delta
+        if cur > peak:
+            peak = cur
+    return peak
+
+
+def finalize_summary(summary: dict) -> None:
+    """Collapse per-model `intervals` into final statistics. In-place."""
+    for bucket in summary["llm_calls"].values():
+        intervals: list[tuple[float, float]] = bucket.pop("intervals", [])
+        compute_s = sum(e - s for s, e in intervals)
+        wall_clock_s = _union_duration(intervals)
+        bucket["compute_time_s"] = round(compute_s, 3)
+        bucket["wall_clock_time_s"] = round(wall_clock_s, 3)
+        bucket["avg_call_s"] = (
+            round(compute_s / bucket["count"], 3) if bucket["count"] else 0.0
         )
-        bucket["count"] += 1
-        bucket["total_s"] += duration_s
-        bucket["input_tokens"] += int(input_tokens or 0)
-        bucket["output_tokens"] += int(output_tokens or 0)
-        if error:
-            bucket["errors"] += 1
-
-    def record_counts(self, **counts: int):
-        self._counts.update(counts)
-
-    @contextmanager
-    def stage(self, name: str):
-        t0 = time.perf_counter()
-        try:
-            yield
-        finally:
-            self._stages[name] = {"duration_s": round(time.perf_counter() - t0, 3)}
-
-    def summary(self) -> dict:
-        total_in = total_out = 0
-        per_model = {}
-        for model, d in self._llm_calls.items():
-            in_t = d["input_tokens"]
-            out_t = d["output_tokens"]
-            total_in += in_t
-            total_out += out_t
-            per_model[model] = {
-                "count": d["count"],
-                "total_s": round(d["total_s"], 3),
-                "avg_s": round(d["total_s"] / d["count"], 3) if d["count"] else 0,
-                "errors": d["errors"],
-                "input_tokens": in_t,
-                "output_tokens": out_t,
-            }
-        return {
-            "document_id": self.document_id,
-            "run_id": self.run_id,
-            "total_runtime_s": round(time.perf_counter() - self._t0, 3),
-            "stages": self._stages,
-            "counts": self._counts,
-            "llm_calls": per_model,
-            "token_totals": {
-                "input": total_in,
-                "output": total_out,
-                "total": total_in + total_out,
-            },
-        }
-
-
-_current_metrics: contextvars.ContextVar[PipelineMetrics | None] = contextvars.ContextVar(
-    "pipeline_metrics", default=None,
-)
-
-
-def get_current_metrics() -> PipelineMetrics | None:
-    return _current_metrics.get()
-
-
-def set_current_metrics(m: PipelineMetrics | None) -> contextvars.Token:
-    return _current_metrics.set(m)
+        bucket["max_concurrent"] = _peak_concurrency(intervals)

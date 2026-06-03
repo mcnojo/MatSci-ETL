@@ -77,21 +77,24 @@ enrichment:
   max_concurrent_enrichments: 4
   figure_aware_resummarize: true      # post-enrichment Stage E: re-summarize nodes with figure data (no new OCR calls)
 
-# Storage backend
-# backend: "local" (default) or "s3"
-# local: artifacts written to kb_root on disk
-# s3:    artifacts written to s3://bucket/prefix/documents/{doc_id}/runs/{run_id}/...
+# Storage backend (scaffolding for the future S3 cutover — see shared/storage/)
+# NOTE: the active code path still reads output.kb_root below. The S3Store /
+# LocalStore abstraction in shared/storage exists but no caller uses it yet;
+# once activities are updated to take URIs, create_store() will read this block.
 storage:
   backend: "local"
   local:
-    root: "./kb"                       # only used when backend=local
+    root: "../kb"                      # relative paths anchored to this config file's dir → etl/kb
   s3:
-    bucket: "chem-lit-artifacts"       # only used when backend=s3
+    bucket: "chem-lit-artifacts"
     prefix: ""
     region: null                       # null = use AWS_DEFAULT_REGION / instance profile
 
-# Output
+# Output — active artifact root (read by activities + asset_extractor)
+# Relative paths are anchored to this config file's directory at load time
+# (see shared/config_loader.py), so `../kb` here resolves to `etl/kb/`
+# regardless of the worker's CWD.
 output:
-  kb_root: "./kb"                      # legacy; overridden by storage.local.root when storage is configured
+  kb_root: "../kb"
   save_page_images: true
   pretty_print_json: true

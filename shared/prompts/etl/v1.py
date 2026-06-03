@@ -1,10 +1,17 @@
-"""
-Prompt registry for the tree-building LLM pipeline.
+"""ETL tree-building prompts, v1.
+
+DO NOT EDIT casually. These prompts were ported (with small, deliberate
+modifications) from the official VectifyAI/PageIndex implementation
+(https://github.com/VectifyAI/PageIndex — pageindex/page_index.py,
+pageindex/utils.py). The tree-builder pipeline is tuned around their exact
+wording; arbitrary rephrasing tends to degrade extraction quality.
+
+If a prompt genuinely needs to change, ship a new version file (`v2.py`)
+alongside this one rather than mutating these strings in place.
 
 Each prompt has two variants:
-- "upstream": verbatim from VectifyAI/PageIndex
-  (https://github.com/VectifyAI/PageIndex — pageindex/page_index.py, pageindex/utils.py).
-  Tuned for large/cloud models (GPT-4o, Claude Sonnet/Opus, Gemini Pro).
+- "upstream": verbatim from VectifyAI/PageIndex. Tuned for large/cloud models
+  (GPT-4o, Claude Sonnet/Opus, Gemini Pro).
 - "local":   elaborated for small open models (Gemma 4 e4b, Qwen 2.5 7B, etc.).
   Adds explicit negative examples, stricter JSON envelopes, and structural
   guidance the small models need to stay on task.
@@ -13,7 +20,7 @@ When upstream and local are identical, both keys point to the same function —
 keep them separate so future divergence stays explicit.
 
 Usage:
-    from .prompts import get_prompt
+    from shared.prompts.etl import get_prompt
     prompt = get_prompt("toc_detector_single_page", style, content=text)
 """
 
@@ -125,29 +132,6 @@ Cleaned Table of contents:
 
 Reply with only this JSON, nothing else:
 {{"completed": "yes or no"}}"""
-
-
-# extract_toc_content (+ continuation)
-
-def _extract_toc_content_upstream(*, content: str) -> str:
-    return f"""
-    Your job is to extract the full table of contents from the given text, replace ... with :
-
-    Given text: {content}
-
-    Directly return the full table of contents content. Do not output anything else."""
-
-
-# local is identical to upstream
-_extract_toc_content_local = _extract_toc_content_upstream
-
-
-def _extract_toc_content_continue_upstream() -> str:
-    return "please continue the generation of table of contents , directly output the remaining part of the structure"
-
-
-def _extract_toc_content_continue_local() -> str:
-    return "please continue the generation of table of contents, directly output the remaining part of the structure"
 
 
 # toc_index_extractor
@@ -657,14 +641,6 @@ _PROMPTS: dict[str, dict[str, Callable[..., str]]] = {
     "check_if_toc_transformation_is_complete": {
         "upstream": _check_if_toc_transformation_is_complete_upstream,
         "local": _check_if_toc_transformation_is_complete_local,
-    },
-    "extract_toc_content": {
-        "upstream": _extract_toc_content_upstream,
-        "local": _extract_toc_content_local,
-    },
-    "extract_toc_content_continue": {
-        "upstream": _extract_toc_content_continue_upstream,
-        "local": _extract_toc_content_continue_local,
     },
     "toc_index_extractor": {
         "upstream": _toc_index_extractor_upstream,
