@@ -6,18 +6,43 @@ orchestrates between them and drives tree construction via tree_logic.build_tree
 with a call_llm closure that schedules llm_text_call_activity per call.
 """
 
+import asyncio
 import base64
 import json
 import os
 import time
 from pathlib import Path
+from typing import TypeVar
 
 import pymupdf
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
-from prod.workflows.models import (
+_T = TypeVar("_T")
+
+
+async def _await_with_heartbeats(coro, *, interval_s: float = 20.0) -> _T:
+    """Await `coro` while emitting Temporal heartbeats every `interval_s`.
+
+    Pattern: shield the underlying task from the periodic-timeout cancellation
+    that `wait_for` would otherwise apply, so the network call keeps running
+    while we wake up only long enough to call `activity.heartbeat()`. If the
+    activity itself is cancelled (e.g. graceful worker shutdown), propagate
+    cancellation to the inner task — shield by itself would not.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=interval_s)
+            except asyncio.TimeoutError:
+                activity.heartbeat()
+    except BaseException:
+        task.cancel()
+        raise
+
+from prod.shared_infra.activity_models import (
     ChandraCallInput,
     ChandraCallOutput,
     LlmTextCallInput,
@@ -219,9 +244,11 @@ async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
 @activity.defn(name="process-pdf_llm-text-call")
 async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
     activity.heartbeat()
-    result = await execute_text_call(
-        input.config, input.model, input.prompt,
-        json_mode=input.json_mode, temperature=input.temperature,
+    result = await _await_with_heartbeats(
+        execute_text_call(
+            input.config, input.model, input.prompt,
+            json_mode=input.json_mode, temperature=input.temperature,
+        ),
     )
     return LlmTextCallOutput(
         model=result["model"],
@@ -240,19 +267,21 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
     b64 = _image_to_b64(input.image_path)
     client = AsyncOpenAI(base_url=input.base_url, api_key=input.api_key)
     started_at = time.time()
-    response = await client.chat.completions.create(
-        model=input.model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                    {"type": "text", "text": input.prompt},
-                ],
-            },
-        ],
-        max_tokens=input.max_tokens,
-        temperature=0.0,
+    response = await _await_with_heartbeats(
+        client.chat.completions.create(
+            model=input.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                        {"type": "text", "text": input.prompt},
+                    ],
+                },
+            ],
+            max_tokens=input.max_tokens,
+            temperature=0.0,
+        ),
     )
     ended_at = time.time()
     in_t, out_t = _openai_usage(response)

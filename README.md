@@ -280,3 +280,10 @@ ollama create gemma3:4b-8k -f /tmp/Modelfile.gemma4b
 - Once a number of papers have results formalized and summarized, propose hypotheses to test/simulate in a sandbox
     - first pass with a model which approximates reults
     - second is the formal simulation
+
+
+
+## Noted on Simualtion:
+- Atomate appears to contain a set of valuable simulators: https://atomate.org/
+- anything by https://github.com/hackingmaterials
+- 

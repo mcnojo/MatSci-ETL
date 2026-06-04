@@ -7,12 +7,12 @@
 # Usage:
 #   ssh cpu-pipeline-01
 #   cd /opt/ocr-benchmarking
-#   ./prod/scripts/setup_cpu.sh
+#   ./prod/live/scripts/setup_cpu.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 echo "=== Installing Docker ==="
 if ! command -v docker &>/dev/null; then
@@ -44,7 +44,7 @@ Requires=docker.service
 [Service]
 Type=simple
 WorkingDirectory=$REPO_ROOT
-ExecStart=$REPO_ROOT/env/bin/python -m prod.worker --config prod/config/prod_config.yaml
+ExecStart=$REPO_ROOT/env/bin/python -m prod.live.worker --config prod/live/config/prod_config.yaml
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

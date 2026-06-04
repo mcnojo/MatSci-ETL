@@ -34,7 +34,17 @@ NO_RETRY_POLICY = RetryPolicy(maximum_attempts=1)
 # start_to_close: max wall-clock per single activity attempt.
 # schedule_to_close: max wall-clock from task scheduled to final completion
 #                    (spans all retry attempts).
+# heartbeat:       max gap between activity.heartbeat() calls before Temporal
+#                  considers the worker dead and schedules a retry. Set well
+#                  below start_to_close so Spot interruptions are detected
+#                  within seconds, not minutes.
 
 CPU_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 GPU_ACTIVITY_TIMEOUT = timedelta(minutes=30)
+CPU_HEARTBEAT_TIMEOUT = timedelta(seconds=30)
+GPU_HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=2)
+BATCH_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=24)
+
+# Worker shutdown — Spot termination notice is 120s; leave headroom.
+WORKER_GRACEFUL_SHUTDOWN_TIMEOUT = timedelta(seconds=90)

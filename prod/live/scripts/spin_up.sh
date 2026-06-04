@@ -6,12 +6,12 @@
 # 3. Wait for both, write chandra.ip
 #
 # Usage:
-#   ./prod/scripts/spin_up.sh
+#   ./prod/live/scripts/spin_up.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/vllm/aws/config.sh"
 
 # 1. Start CPU box

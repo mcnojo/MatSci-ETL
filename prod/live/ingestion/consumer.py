@@ -3,8 +3,8 @@
 Tiny long-running daemon. Does no processing itself — it owns the SQS contract and the workflow ID format.
 
 Usage:
-    python -m prod.ingestion.consumer
-    python -m prod.ingestion.consumer --config prod/config/prod_config.yaml
+    python -m prod.live.ingestion.consumer
+    python -m prod.live.ingestion.consumer --config prod/live/config/prod_config.yaml
 
 Flow:
     S3 bucket notification -> SQS pdf-ingestion-queue -> this consumer -> Temporal ProcessPdfWorkflow start -> SQS message deleted
@@ -22,9 +22,9 @@ import yaml
 import boto3
 from temporalio.client import Client
 
-from prod.workflows.process_pdf import ProcessPdfWorkflow
-from prod.workflows.models import ProcessPdfWorkflowInput
-from prod.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from prod.live.workflows.process_pdf import ProcessPdfWorkflow
+from prod.live.workflows.models import ProcessPdfWorkflowInput
+from prod.shared_infra.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import load_pipeline_config
 from shared.temporal_client import connect_temporal
 
@@ -110,7 +110,7 @@ async def poll_loop(
 
 def _load_pipeline_config(prod_cfg: dict) -> dict:
     """Load the ETL pipeline config and apply prod overrides."""
-    base_path = Path(__file__).resolve().parents[2] / "etl" / "config" / "pipeline_config.yaml"
+    base_path = Path(__file__).resolve().parents[3] / "etl" / "config" / "pipeline_config.yaml"
     config = load_pipeline_config(base_path)
 
     overrides = prod_cfg.get("pipeline_overrides", {})
@@ -129,7 +129,7 @@ def _load_pipeline_config(prod_cfg: dict) -> dict:
     return config
 
 
-CONFIG_PATH = "prod/config/prod_config.yaml"
+CONFIG_PATH = "prod/live/config/prod_config.yaml"
 
 
 def main():

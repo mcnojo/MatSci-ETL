@@ -7,7 +7,7 @@ infra-down:
 	docker compose down
 
 worker:
-	python -m prod.worker
+	python -m prod.live.worker
 
 run:
 	@echo "Usage: python -m etl.cli --pdf <path>"

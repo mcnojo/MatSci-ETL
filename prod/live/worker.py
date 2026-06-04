@@ -1,21 +1,32 @@
 """Temporal worker — polls both cpu and gpu task queues.
 
 Usage:
-    python -m prod.worker
-    python -m prod.worker --config prod/config/prod_config.yaml
-    python -m prod.worker --temporal-address 10.0.1.5:7233
+    python -m prod.live.worker
+    python -m prod.live.worker --config prod/live/config/prod_config.yaml
+    python -m prod.live.worker --temporal-address 10.0.1.5:7233
+
+Graceful shutdown: on SIGTERM/SIGINT (e.g. Spot interruption notice, systemd
+stop, Ctrl-C) we call `worker.shutdown()` on both workers. The
+graceful_shutdown_timeout controls how long activities are given to complete
+before they are cancelled. Activities that don't finish in time will be
+retried by Temporal on a different worker via the heartbeat-timeout path.
 """
 
 import asyncio
 import logging
+import signal
 
 import click
 import yaml
 from temporalio.worker import Worker
 
 from etl.pipeline.activities import activities
-from prod.task_queues import CPU_TASK_QUEUE, GPU_TASK_QUEUE
-from prod.workflows.process_pdf import ProcessPdfWorkflow
+from prod.live.workflows.process_pdf import ProcessPdfWorkflow
+from prod.shared_infra.task_queues import (
+    CPU_TASK_QUEUE,
+    GPU_TASK_QUEUE,
+    WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
+)
 from shared.temporal_client import connect_temporal
 
 log = logging.getLogger("worker")
@@ -33,19 +44,20 @@ async def run_worker(
         temporal_address, temporal_namespace,
     )
 
-    # Two workers on the same client, one per task queue
     cpu_worker = Worker(
         client,
         task_queue=CPU_TASK_QUEUE,
         workflows=[ProcessPdfWorkflow],
         activities=activities,
         max_concurrent_activities=max_concurrent_cpu,
+        graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     gpu_worker = Worker(
         client,
         task_queue=GPU_TASK_QUEUE,
         activities=activities,
         max_concurrent_activities=max_concurrent_gpu,
+        graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
     )
 
     log.info(
@@ -54,9 +66,29 @@ async def run_worker(
         max_concurrent_cpu, max_concurrent_gpu,
     )
 
+    shutdown_event = asyncio.Event()
+
+    def _on_signal(signame: str) -> None:
+        log.info("Received %s, initiating graceful worker shutdown", signame)
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _on_signal, sig.name)
+
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(cpu_worker.run())
-        tg.create_task(gpu_worker.run())
+        cpu_task = tg.create_task(cpu_worker.run())
+        gpu_task = tg.create_task(gpu_worker.run())
+
+        async def _await_shutdown() -> None:
+            await shutdown_event.wait()
+            # Shutdown returns when the worker has fully drained or the
+            # graceful_shutdown_timeout has elapsed. Running shutdowns in
+            # parallel keeps total drain time bounded by the timeout, not
+            # double it.
+            await asyncio.gather(cpu_worker.shutdown(), gpu_worker.shutdown())
+
+        tg.create_task(_await_shutdown())
 
 
 @click.command()

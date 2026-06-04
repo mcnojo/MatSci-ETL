@@ -9,13 +9,13 @@
 # any more and it makes better sense to use EBSw
 #
 # Usage:
-#   ./prod/scripts/teardown.sh           # interactive confirmation
-#   ./prod/scripts/teardown.sh --force   # skip confirmation
+#   ./prod/live/scripts/teardown.sh           # interactive confirmation
+#   ./prod/live/scripts/teardown.sh --force   # skip confirmation
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/vllm/aws/config.sh"
 
 FORCE="${1:-}"
@@ -93,4 +93,4 @@ echo ""
 echo "Teardown complete. EBS volumes will be deleted with the instances."
 echo "To reprovision:"
 echo "  GPU: vllm/aws/launch.sh chandra"
-echo "  CPU: (launch CPU instance, then ./prod/scripts/setup_cpu.sh)"
+echo "  CPU: (launch CPU instance, then ./prod/live/scripts/setup_cpu.sh)"

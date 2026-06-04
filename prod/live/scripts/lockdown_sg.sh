@@ -3,8 +3,8 @@
 # is only reachable from the CPU pipeline box, not the public internet.
 #
 # Usage:
-#   ./prod/scripts/lockdown_sg.sh
-#   ./prod/scripts/lockdown_sg.sh --dry-run
+#   ./prod/live/scripts/lockdown_sg.sh
+#   ./prod/live/scripts/lockdown_sg.sh --dry-run
 #
 # Prerequisites:
 #   - CPU and GPU instances already launched (via vllm/aws/launch.sh)
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/vllm/aws/config.sh"
 
 DRY_RUN="${1:-}"

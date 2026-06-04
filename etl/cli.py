@@ -16,9 +16,9 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from prod.workflows.process_pdf import ProcessPdfWorkflow
-from prod.workflows.models import ProcessPdfWorkflowInput, ProcessPdfWorkflowOutput
-from prod.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from prod.live.workflows.process_pdf import ProcessPdfWorkflow
+from prod.live.workflows.models import ProcessPdfWorkflowInput, ProcessPdfWorkflowOutput
+from prod.shared_infra.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import load_pipeline_config
 from shared.temporal_client import connect_temporal
 

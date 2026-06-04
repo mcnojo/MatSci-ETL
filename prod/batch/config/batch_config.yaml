@@ -1,0 +1,30 @@
+# Batch-mode configuration.
+#
+# The live config (prod/live/config/prod_config.yaml) governs the always-on
+# streaming service. This file governs bounded bulk-job runs.
+
+temporal:
+  address: "localhost:7233"
+  namespace: "default"
+
+# Where batch report artifacts land. Per-PDF trees still go under
+# the pipeline's storage.s3 root (shared with live).
+report:
+  s3_root: "s3://chem-lit-artifacts/batches"
+
+# Sharding
+planner:
+  shard_size: 50                    # items per ShardWorkflow
+
+# Concurrency caps applied inside the workflow layer. The real throughput
+# ceiling is on the worker (max_concurrent_activities); these caps just
+# prevent thundering-herd Temporal calls at workflow start.
+concurrency:
+  shards_in_flight: 8               # ShardWorkflow children running in parallel
+  pdfs_per_shard_in_flight: 8       # ProcessPdfWorkflow children per shard
+
+# Fleet (consumed by submit_batch.sh / teardown_batch.sh in Phase 5)
+fleet:
+  cpu_asg_name: "ocr-batch-cpu-asg"
+  gpu_asg_name: "ocr-batch-gpu-asg"
+  vllm_role_tag: "vllm-batch"       # vllm_resolve.py picks endpoints by role

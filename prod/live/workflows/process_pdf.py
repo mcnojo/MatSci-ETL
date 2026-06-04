@@ -41,11 +41,17 @@ with workflow.unsafe.imports_passed_through():
         build_opt_from_config,
         build_tree,
     )
-    from prod.task_queues import (
+    from prod.shared_infra.activity_models import (
+        ChandraCallInput,
+        LlmTextCallInput,
+    )
+    from prod.shared_infra.task_queues import (
         CPU_ACTIVITY_TIMEOUT,
+        CPU_HEARTBEAT_TIMEOUT,
         CPU_TASK_QUEUE,
         DEFAULT_RETRY_POLICY,
         GPU_ACTIVITY_TIMEOUT,
+        GPU_HEARTBEAT_TIMEOUT,
         GPU_RETRY_POLICY,
         GPU_TASK_QUEUE,
     )
@@ -54,8 +60,6 @@ with workflow.unsafe.imports_passed_through():
     from shared.schemas import TreeNode, VisualElement
 
     from .models import (
-        ChandraCallInput,
-        LlmTextCallInput,
         ProcessPdfWorkflowInput,
         ProcessPdfWorkflowOutput,
     )
@@ -99,6 +103,7 @@ class ProcessPdfWorkflow:
             LoadPagesInput(pdf_path=input.pdf_path),
             task_queue=CPU_TASK_QUEUE,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         pages = load_out.page_list
@@ -140,6 +145,7 @@ class ProcessPdfWorkflow:
             ),
             task_queue=CPU_TASK_QUEUE,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         page_elements = assets_out.page_elements
@@ -160,6 +166,7 @@ class ProcessPdfWorkflow:
             ),
             task_queue=CPU_TASK_QUEUE,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         tree = assign_out.tree
@@ -182,6 +189,7 @@ class ProcessPdfWorkflow:
                 ),
                 task_queue=GPU_TASK_QUEUE,
                 start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+                heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                 retry_policy=GPU_RETRY_POLICY,
             )
             merge_call_record(
@@ -227,6 +235,7 @@ class ProcessPdfWorkflow:
                     ),
                     task_queue=GPU_TASK_QUEUE,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+                    heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
                 )
             except Exception as exc:
@@ -276,6 +285,7 @@ class ProcessPdfWorkflow:
                     LlmTextCallInput(config=config, model=model_strong, prompt=prompt),
                     task_queue=GPU_TASK_QUEUE,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+                    heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
                 )
             except Exception as exc:
@@ -318,6 +328,7 @@ class ProcessPdfWorkflow:
                     LlmTextCallInput(config=config, model=model_fast, prompt=prompt),
                     task_queue=GPU_TASK_QUEUE,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+                    heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
                 )
             except Exception as exc:
@@ -355,6 +366,7 @@ class ProcessPdfWorkflow:
             ),
             task_queue=CPU_TASK_QUEUE,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         finalize_summary(summary)

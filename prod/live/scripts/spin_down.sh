@@ -5,7 +5,7 @@
 # 2. Stop the CPU box (Temporal + Postgres + worker)
 #
 # Usage:
-#   ./prod/scripts/spin_down.sh
+#   ./prod/live/scripts/spin_down.sh
 #
 # The Elastic IP on the CPU box reattaches automatically on next start.
 # GPU box IP will change — the resolver handles this.
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/vllm/aws/config.sh"
 
 # Resolve instance IDs
@@ -63,4 +63,4 @@ fi
 
 echo ""
 echo "Spin-down complete. Instances are stopping (not terminated)."
-echo "EBS volumes are preserved. Resume with: ./prod/scripts/spin_up.sh"
+echo "EBS volumes are preserved. Resume with: ./prod/live/scripts/spin_up.sh"
