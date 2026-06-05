@@ -237,3 +237,21 @@ etl/logs/*
 docs/
 .DS_Store
 test_hard/
+
+# Terraform — provider plugins, state, env-specific tfvars.
+# .terraform.lock.hcl stays tracked so provider versions are reproducible.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
