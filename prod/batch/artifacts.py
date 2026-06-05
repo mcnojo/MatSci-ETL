@@ -93,7 +93,19 @@ def write_report_files(
 
 
 def _put(uri: str, body: bytes, content_type: str) -> None:
-    bucket, key = _split_s3_uri(uri)
-    boto3.client("s3").put_object(
-        Bucket=bucket, Key=key, Body=body, ContentType=content_type,
-    )
+    """Write `body` to either an s3:// URI or a local filesystem path.
+
+    Local paths are only useful when the worker writing the artifact runs on
+    the same host the operator will read it from — single-host integration
+    testing. Production prefers s3:// so artifacts are durably addressable
+    across the fleet.
+    """
+    if uri.startswith("s3://"):
+        bucket, key = _split_s3_uri(uri)
+        boto3.client("s3").put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType=content_type,
+        )
+        return
+    path = Path(uri)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)

@@ -43,8 +43,11 @@ CPU_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 GPU_ACTIVITY_TIMEOUT = timedelta(minutes=30)
 CPU_HEARTBEAT_TIMEOUT = timedelta(seconds=30)
 GPU_HEARTBEAT_TIMEOUT = timedelta(seconds=60)
-WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=2)
-BATCH_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=24)
+
+# Workflow execution timeouts span all activity retries and child workflows.
+WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=2)              # per-PDF
+SHARD_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=12)       # ~50 PDFs with bounded concurrency
+BATCH_WORKFLOW_EXECUTION_TIMEOUT = timedelta(hours=24)       # parent of all shards
 
 # Worker shutdown — Spot termination notice is 120s; leave headroom.
 WORKER_GRACEFUL_SHUTDOWN_TIMEOUT = timedelta(seconds=90)

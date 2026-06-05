@@ -1,11 +1,102 @@
-"""ShardWorkflow — child workflow that processes ~50 items via ProcessPdfWorkflow.
+"""ShardWorkflow — process ~50 PDFs by fanning out ProcessPdfWorkflow children.
 
-Phase 3 (current): module placeholder. Phase 4 implements:
-  - Iterate the shard's BatchItem list.
-  - For each, start_child_workflow(ProcessPdfWorkflow, ...) with bounded
-    concurrency via asyncio.Semaphore.
-  - Collect per-item outcomes (success / failure + tree URI) and return
-    them to BatchRunWorkflow.
+Why a separate workflow per shard rather than fanning out from the parent
+BatchRunWorkflow directly: keeps any single workflow's event history bounded
+and makes per-shard cancel/retry granular. Each ShardWorkflow's history
+contains ~3 events per child (start + complete + signal) × ~50 children =
+under 200 events. The parent BatchRunWorkflow's history scales with shard
+count, not item count.
+
+Failure handling: a per-PDF child workflow that errors permanently (after
+its own retries) is caught here and recorded as an `ItemResult(status=
+"failure")`. The shard itself never raises just because one PDF failed —
+the operator needs the full report including failures.
 """
 
-# Workflow class lands here in Phase 4.
+import asyncio
+import uuid
+
+from temporalio import workflow
+from temporalio.common import WorkflowIDReusePolicy
+from temporalio.exceptions import ChildWorkflowError
+
+with workflow.unsafe.imports_passed_through():
+    from prod.batch.planner import per_pdf_workflow_id
+    from prod.live.workflows.models import (
+        ProcessPdfWorkflowInput,
+        ProcessPdfWorkflowOutput,
+    )
+    from prod.live.workflows.process_pdf import ProcessPdfWorkflow
+    from prod.shared_infra.task_queues import (
+        CPU_TASK_QUEUE,
+        WORKFLOW_EXECUTION_TIMEOUT,
+    )
+
+    from .models import ItemResult, ShardInput, ShardOutput
+
+
+@workflow.defn
+class ShardWorkflow:
+    """Process one shard of a batch by spawning per-PDF ProcessPdfWorkflow children."""
+
+    @workflow.run
+    async def run(self, input: ShardInput) -> ShardOutput:
+        sem = asyncio.Semaphore(input.max_in_flight)
+        results: list[ItemResult | None] = [None] * len(input.items)
+
+        async def run_one(local_idx: int) -> None:
+            item = input.items[local_idx]
+            child_id = per_pdf_workflow_id(input.batch_id, item.document_id)
+            async with sem:
+                try:
+                    out: ProcessPdfWorkflowOutput = await workflow.execute_child_workflow(
+                        ProcessPdfWorkflow.run,
+                        ProcessPdfWorkflowInput(
+                            document_id=item.document_id,
+                            run_id=str(uuid.uuid4()),
+                            pdf_path=item.pdf_uri,
+                            config=input.pipeline_config,
+                        ),
+                        id=child_id,
+                        task_queue=CPU_TASK_QUEUE,
+                        execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
+                        # USE_EXISTING: if a prior attempt of the same batch
+                        # already started this PDF and it's still running,
+                        # re-attach instead of double-running.
+                        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+                    )
+                    results[local_idx] = ItemResult(
+                        document_id=item.document_id,
+                        pdf_uri=item.pdf_uri,
+                        status="success",
+                        workflow_id=child_id,
+                        tree_path=out.tree_path,
+                        node_count=out.node_count,
+                        total_pages=out.total_pages,
+                        metrics_summary=out.metrics_summary,
+                    )
+                except ChildWorkflowError as exc:
+                    workflow.logger.warning(
+                        "ProcessPdfWorkflow failed for %s: %s",
+                        item.document_id, exc,
+                    )
+                    results[local_idx] = ItemResult(
+                        document_id=item.document_id,
+                        pdf_uri=item.pdf_uri,
+                        status="failure",
+                        workflow_id=child_id,
+                        error=_truncate(str(exc), 2000),
+                    )
+
+        async with asyncio.TaskGroup() as tg:
+            for i in range(len(input.items)):
+                tg.create_task(run_one(i))
+
+        return ShardOutput(
+            shard_index=input.shard_index,
+            items=[r for r in results if r is not None],
+        )
+
+
+def _truncate(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[:limit] + f"…[+{len(s) - limit} more chars]"

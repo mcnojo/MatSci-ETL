@@ -20,7 +20,10 @@ import click
 import yaml
 from temporalio.worker import Worker
 
-from etl.pipeline.activities import activities
+from etl.pipeline.activities import activities as etl_activities
+from prod.batch.activities import activities as batch_activities
+from prod.batch.workflows.batch_run import BatchRunWorkflow
+from prod.batch.workflows.shard import ShardWorkflow
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from prod.shared_infra.task_queues import (
     CPU_TASK_QUEUE,
@@ -28,6 +31,15 @@ from prod.shared_infra.task_queues import (
     WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
 )
 from shared.temporal_client import connect_temporal
+
+# CPU queue runs orchestration workflows (process-pdf, shard, batch-run) and
+# all CPU-bound activities (PyMuPDF, tree/asset construction, batch IO).
+CPU_WORKFLOWS = [ProcessPdfWorkflow, ShardWorkflow, BatchRunWorkflow]
+CPU_ACTIVITIES = etl_activities + batch_activities
+# GPU queue runs only GPU activities (text LLM, Chandra OCR). It does not host
+# workflows — they live on the CPU worker — so a Spot reclamation of a GPU
+# instance only loses in-flight inference attempts, not orchestration state.
+GPU_ACTIVITIES = etl_activities
 
 log = logging.getLogger("worker")
 
@@ -47,15 +59,15 @@ async def run_worker(
     cpu_worker = Worker(
         client,
         task_queue=CPU_TASK_QUEUE,
-        workflows=[ProcessPdfWorkflow],
-        activities=activities,
+        workflows=CPU_WORKFLOWS,
+        activities=CPU_ACTIVITIES,
         max_concurrent_activities=max_concurrent_cpu,
         graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     gpu_worker = Worker(
         client,
         task_queue=GPU_TASK_QUEUE,
-        activities=activities,
+        activities=GPU_ACTIVITIES,
         max_concurrent_activities=max_concurrent_gpu,
         graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
     )
