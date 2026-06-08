@@ -48,7 +48,7 @@ data "aws_iam_policy_document" "batch_worker" {
     resources = ["*"]
   }
 
-  # Pre-staged for a future worker-side drain handler; unused today.
+  # Drain handler reads from the lifecycle SQS queue.
   statement {
     sid = "LifecycleQueueDrain"
     actions = [
@@ -73,6 +73,13 @@ data "aws_iam_policy_document" "batch_worker" {
       "logs:DescribeLogStreams",
     ]
     resources = ["${aws_cloudwatch_log_group.batch_worker.arn}:*"]
+  }
+
+  # CWAgent publishes into OCR/Batch/Worker; PutMetricData is not resource-scopable.
+  statement {
+    sid       = "CloudWatchAgentMetrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
   }
 }
 

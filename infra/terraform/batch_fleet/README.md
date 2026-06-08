@@ -1,6 +1,8 @@
 # `batch_fleet`
 
-Spot ASGs (CPU + GPU) for `prod/batch/`. Phase 5 of `INFRA_PROVISIONING_PLAN.md`. Inert until applied.
+Two Spot ASGs (cpu-task-queue + gpu-task-queue) for `prod/batch/`. Phase 5 of `INFRA_PROVISIONING_PLAN.md`. Inert until applied.
+
+Both ASGs run CPU instances. The gpu-task-queue workers are HTTP clients to vLLM — no local GPU. The vLLM endpoint lives on its own box (Phase 6 manages the batch-tuned one).
 
 ## Required vars
 
@@ -32,45 +34,36 @@ terraform plan
 terraform apply
 ```
 
-## What gets created (~25 resources)
+## What gets created (~20 resources)
 
-- CPU + GPU ASGs — Spot, `min=0`, `max=2`, `capacity-optimized` across 3 instance families × all default-VPC AZs. `capacity_rebalance=true` so replacements overlap drains.
-- Two launch templates on the latest AL2023 x86 AMI, IMDSv2-only, encrypted gp3 (30GB CPU / 100GB GPU), same IAM profile + SG.
+- `ocr-batch-cpu-queue` + `ocr-batch-gpu-queue` ASGs — Spot, `min=0`, `max=2`, `capacity-optimized` across 3 instance families × all default-VPC AZs. `capacity_rebalance=true` so replacements overlap drains. **No scaling policy** — `cli run` writes `desired_capacity` per batch and zeroes it at end (`cli teardown-fleet` for force-stop).
+- Two launch templates on the latest AL2023 x86 AMI, IMDSv2-only, encrypted 30GB gp3. Systemd unit caps torch/OMP/MKL threads at `torch_num_threads` (default 2) so concurrent doclayout-yolo calls don't oversubscribe vCPUs.
 - Worker SG — no inbound (Session Manager); one ingress rule on `cpu_pipeline_security_group_id:7233` from the worker SG.
 - SQS lifecycle queue + termination hooks. Default action `CONTINUE` — unsubscribed queue is harmless.
 - IAM: worker (S3 on bucket, EC2 describe for vLLM tag lookup, SQS drain, SSM, scoped Logs); lifecycle publisher (ASG → SQS).
-- CloudWatch: log group + target-tracking on `OCR/Batch/QueueDepth / MAX(InService, 1)`, target = 4.
+- CloudWatch: log group only. No custom metrics, no target tracking.
 
 ## Dependencies (must land before apply)
 
-**`prod/batch/scripts/user_data.sh.tpl`** (Step 2). `templatefile()` reads at plan time. Variables passed in:
+**`prod/batch/scripts/user_data.sh.tpl`**. `templatefile()` reads at plan time. Rendered twice — once per launch template, differing only on `worker_role`. Variables:
 
 | Var | Type |
 |---|---|
 | `repo_url`, `repo_ref` | string |
 | `temporal_address`, `temporal_namespace` | string |
-| `max_concurrent_cpu`, `max_concurrent_gpu` | number |
-| `aws_region`, `artifact_bucket`, `lifecycle_queue` | string |
-
-**`queue_depth_publisher.py`** (Step 3) on `cpu-pipeline-01`. Without it, target tracking sees missing data and holds capacity. `submit_batch.sh` (Step 4) sidesteps by setting desired capacity directly.
+| `worker_role` | string — `"cpu"` or `"gpu"`; selects which queue this instance polls |
+| `max_concurrent_cpu`, `max_concurrent_gpu`, `torch_num_threads` | number |
+| `aws_region`, `artifact_bucket`, `lifecycle_queue`, `log_group_name` | string |
 
 ## Operate
 
 ```bash
 # Shell in via Session Manager (no SSH, no open ports)
 INSTANCE_ID=$(aws ec2 describe-instances --region us-west-2 \
-  --filters "Name=tag:Name,Values=ocr-batch-cpu-worker" \
+  --filters "Name=tag:Name,Values=ocr-batch-cpu-queue-worker" \
             "Name=instance-state-name,Values=running" \
   --query 'Reservations[0].Instances[0].InstanceId' --output text)
 aws ssm start-session --target "$INSTANCE_ID"
-
-# Live queue depth
-aws cloudwatch get-metric-statistics \
-  --namespace OCR/Batch --metric-name QueueDepth \
-  --dimensions Name=Queue,Value=gpu-task-queue \
-  --start-time "$(date -u -v -10M +%Y-%m-%dT%H:%M:%SZ)" \
-  --end-time   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --period 60 --statistics Average
 
 # Destroy — cleanly removes the cross-SG ingress rule
 terraform destroy
@@ -78,8 +71,8 @@ terraform destroy
 
 ## Cost
 
-Idle: ~$0.30/mo × 2 custom metrics; CloudWatch/SQS under free tier.
-Active: ~$0.04/hr × CPU `max_size` Spot; ~$0.30/hr × GPU `max_size` Spot.
+Idle: CloudWatch log group (free under 5GB/mo); SQS under free tier.
+Active: ~$0.04–0.09/hr per Spot instance (c7i.large–xlarge), both ASGs.
 
 ## Gotchas
 

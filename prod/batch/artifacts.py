@@ -1,14 +1,8 @@
-"""S3 artifact IO for the batch path — manifest read, report write.
-
-Kept narrow: this module owns the S3 path layout for batch-scoped artifacts
-and the (de)serialization of manifests + reports. Workflows treat these
-helpers as opaque IO calls.
+"""S3 artifact IO for the batch path: manifest read, report write.
 
 Path layout:
     s3://<bucket>/batches/<batch_id>/manifest.json
-    s3://<bucket>/batches/<batch_id>/report/summary.json
-    s3://<bucket>/batches/<batch_id>/report/per_item.csv
-    s3://<bucket>/batches/<batch_id>/report/failures.jsonl
+    s3://<bucket>/batches/<batch_id>/report/{summary.json,per_item.csv,failures.jsonl,report.json,report.md}
 """
 
 import csv
@@ -34,11 +28,7 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def read_manifest(manifest_uri: str) -> BatchManifest:
-    """Read and validate a manifest from S3 or local disk.
-
-    `manifest_uri` may be either an `s3://bucket/key.json` URI or a local
-    filesystem path. Validation is via the Pydantic model.
-    """
+    """Read+validate a manifest from `s3://...` or a local path."""
     if manifest_uri.startswith("s3://"):
         bucket, key = _split_s3_uri(manifest_uri)
         s3 = boto3.client("s3")
@@ -50,10 +40,6 @@ def read_manifest(manifest_uri: str) -> BatchManifest:
 
 
 def report_prefix(report_root: str, batch_id: str) -> str:
-    """Compose the S3 prefix where this batch's report artifacts live.
-
-    `report_root` is configured operator-side (e.g. "s3://chem-lit-artifacts/batches").
-    """
     return f"{report_root.rstrip('/')}/{batch_id}/report"
 
 
@@ -81,9 +67,9 @@ def write_report_files(
         writer.writerows(per_item)
     per_item_body = per_item_buf.getvalue().encode("utf-8")
 
-    _put(summary_uri, summary_body, "application/json")
-    _put(per_item_uri, per_item_body, "text/csv")
-    _put(failures_uri, failures_body, "application/x-ndjson")
+    put_artifact_bytes(summary_uri, summary_body, "application/json")
+    put_artifact_bytes(per_item_uri, per_item_body, "text/csv")
+    put_artifact_bytes(failures_uri, failures_body, "application/x-ndjson")
 
     return {
         "summary_uri": summary_uri,
@@ -92,14 +78,8 @@ def write_report_files(
     }
 
 
-def _put(uri: str, body: bytes, content_type: str) -> None:
-    """Write `body` to either an s3:// URI or a local filesystem path.
-
-    Local paths are only useful when the worker writing the artifact runs on
-    the same host the operator will read it from — single-host integration
-    testing. Production prefers s3:// so artifacts are durably addressable
-    across the fleet.
-    """
+def put_artifact_bytes(uri: str, body: bytes, content_type: str) -> None:
+    """Write to `s3://...` or a local path. Local is for single-host testing."""
     if uri.startswith("s3://"):
         bucket, key = _split_s3_uri(uri)
         boto3.client("s3").put_object(

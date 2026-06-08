@@ -33,7 +33,7 @@ data "aws_subnets" "selected" {
   }
 }
 
-# c7i and g6 are both x86, so one AMI covers both ASGs.
+# One AMI covers both ASGs (both x86).
 data "aws_ami" "al2023_x86" {
   most_recent = true
   owners      = ["amazon"]
@@ -50,21 +50,25 @@ data "aws_ami" "al2023_x86" {
 locals {
   subnet_ids = length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.selected.ids
 
-  cpu_asg_name = "${var.name_prefix}-cpu-asg"
-  gpu_asg_name = "${var.name_prefix}-gpu-asg"
+  cpu_queue_asg_name = "${var.name_prefix}-cpu-queue"
+  gpu_queue_asg_name = "${var.name_prefix}-gpu-queue"
 
   user_data_path = "${path.module}/../../../prod/batch/scripts/user_data.sh.tpl"
-  user_data_vars = {
+  user_data_common = {
     repo_url           = var.repo_url
     repo_ref           = var.repo_ref
     temporal_address   = var.temporal_address
     temporal_namespace = var.temporal_namespace
     max_concurrent_cpu = var.max_concurrent_cpu
     max_concurrent_gpu = var.max_concurrent_gpu
+    torch_num_threads  = var.torch_num_threads
     aws_region         = var.region
     artifact_bucket    = var.artifact_bucket
     lifecycle_queue    = aws_sqs_queue.lifecycle_events.url
+    log_group_name     = aws_cloudwatch_log_group.batch_worker.name
   }
+  cpu_queue_user_data_vars = merge(local.user_data_common, { worker_role = "cpu" })
+  gpu_queue_user_data_vars = merge(local.user_data_common, { worker_role = "gpu" })
 }
 
 resource "aws_security_group" "batch_worker" {
@@ -82,7 +86,7 @@ resource "aws_security_group" "batch_worker" {
   }
 }
 
-# Single scoped rule on an out-of-module SG; destroy reverts cleanly.
+# Scoped ingress on an out-of-module SG; destroy reverts cleanly.
 resource "aws_security_group_rule" "temporal_from_workers" {
   description              = "Batch workers to Temporal on cpu-pipeline-01"
   type                     = "ingress"
@@ -99,10 +103,10 @@ resource "aws_sqs_queue" "lifecycle_events" {
   visibility_timeout_seconds = var.lifecycle_hook_heartbeat_s
 }
 
-resource "aws_launch_template" "cpu" {
-  name          = "${var.name_prefix}-cpu-lt"
+resource "aws_launch_template" "cpu_queue" {
+  name          = "${var.name_prefix}-cpu-queue-lt"
   image_id      = data.aws_ami.al2023_x86.id
-  instance_type = var.cpu_instance_types[0] # overridden per-launch by mixed-instances
+  instance_type = var.cpu_queue_instance_types[0] # overridden per-launch by mixed-instances
   key_name      = var.key_pair_name
 
   iam_instance_profile {
@@ -129,26 +133,27 @@ resource "aws_launch_template" "cpu" {
     }
   }
 
-  user_data = base64encode(templatefile(local.user_data_path, local.user_data_vars))
+  user_data = base64encode(templatefile(local.user_data_path, local.cpu_queue_user_data_vars))
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "${var.name_prefix}-cpu-worker"
-      Role = "batch-cpu-worker"
+      Name = "${var.name_prefix}-cpu-queue-worker"
+      Role = "batch-cpu-queue-worker"
     }
   }
 
   tag_specifications {
     resource_type = "volume"
-    tags          = { Name = "${var.name_prefix}-cpu-worker-vol" }
+    tags          = { Name = "${var.name_prefix}-cpu-queue-worker-vol" }
   }
 }
 
-resource "aws_launch_template" "gpu" {
-  name          = "${var.name_prefix}-gpu-lt"
+# gpu-task-queue worker: HTTP client to vLLM, no local GPU.
+resource "aws_launch_template" "gpu_queue" {
+  name          = "${var.name_prefix}-gpu-queue-lt"
   image_id      = data.aws_ami.al2023_x86.id
-  instance_type = var.gpu_instance_types[0]
+  instance_type = var.gpu_queue_instance_types[0]
   key_name      = var.key_pair_name
 
   iam_instance_profile {
@@ -168,33 +173,33 @@ resource "aws_launch_template" "gpu" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = 100 # model weights + container image
+      volume_size           = 30
       volume_type           = "gp3"
       delete_on_termination = true
       encrypted             = true
     }
   }
 
-  user_data = base64encode(templatefile(local.user_data_path, local.user_data_vars))
+  user_data = base64encode(templatefile(local.user_data_path, local.gpu_queue_user_data_vars))
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "${var.name_prefix}-gpu-worker"
-      Role = "batch-gpu-worker"
+      Name = "${var.name_prefix}-gpu-queue-worker"
+      Role = "batch-gpu-queue-worker"
     }
   }
 
   tag_specifications {
     resource_type = "volume"
-    tags          = { Name = "${var.name_prefix}-gpu-worker-vol" }
+    tags          = { Name = "${var.name_prefix}-gpu-queue-worker-vol" }
   }
 }
 
-resource "aws_autoscaling_group" "cpu" {
-  name                = local.cpu_asg_name
+resource "aws_autoscaling_group" "cpu_queue" {
+  name                = local.cpu_queue_asg_name
   min_size            = 0
-  max_size            = var.cpu_max_size
+  max_size            = var.cpu_queue_max_size
   desired_capacity    = 0
   vpc_zone_identifier = local.subnet_ids
 
@@ -207,11 +212,11 @@ resource "aws_autoscaling_group" "cpu" {
   mixed_instances_policy {
     launch_template {
       launch_template_specification {
-        launch_template_id = aws_launch_template.cpu.id
+        launch_template_id = aws_launch_template.cpu_queue.id
         version            = "$Latest"
       }
       dynamic "override" {
-        for_each = var.cpu_instance_types
+        for_each = var.cpu_queue_instance_types
         content {
           instance_type = override.value
         }
@@ -234,7 +239,7 @@ resource "aws_autoscaling_group" "cpu" {
 
   tag {
     key                 = "Name"
-    value               = local.cpu_asg_name
+    value               = local.cpu_queue_asg_name
     propagate_at_launch = false
   }
 
@@ -251,26 +256,26 @@ resource "aws_autoscaling_group" "cpu" {
   }
 }
 
-resource "aws_autoscaling_group" "gpu" {
-  name                = local.gpu_asg_name
+resource "aws_autoscaling_group" "gpu_queue" {
+  name                = local.gpu_queue_asg_name
   min_size            = 0
-  max_size            = var.gpu_max_size
+  max_size            = var.gpu_queue_max_size
   desired_capacity    = 0
   vpc_zone_identifier = local.subnet_ids
 
   capacity_rebalance        = true
   health_check_type         = "EC2"
-  health_check_grace_period = 600 # GPU boot is slower
+  health_check_grace_period = 300
   default_cooldown          = 60
 
   mixed_instances_policy {
     launch_template {
       launch_template_specification {
-        launch_template_id = aws_launch_template.gpu.id
+        launch_template_id = aws_launch_template.gpu_queue.id
         version            = "$Latest"
       }
       dynamic "override" {
-        for_each = var.gpu_instance_types
+        for_each = var.gpu_queue_instance_types
         content {
           instance_type = override.value
         }
@@ -293,7 +298,7 @@ resource "aws_autoscaling_group" "gpu" {
 
   tag {
     key                 = "Name"
-    value               = local.gpu_asg_name
+    value               = local.gpu_queue_asg_name
     propagate_at_launch = false
   }
 
@@ -301,7 +306,7 @@ resource "aws_autoscaling_group" "gpu" {
     strategy = "Rolling"
     preferences {
       min_healthy_percentage = 50
-      instance_warmup        = 600
+      instance_warmup        = 300
     }
   }
 
@@ -310,11 +315,10 @@ resource "aws_autoscaling_group" "gpu" {
   }
 }
 
-# Default action CONTINUE: an unsubscribed queue is harmless. A future
-# worker-side handler can opt into CompleteLifecycleAction without re-applying.
-resource "aws_autoscaling_lifecycle_hook" "cpu_terminating" {
-  name                    = "${var.name_prefix}-cpu-terminating"
-  autoscaling_group_name  = aws_autoscaling_group.cpu.name
+# CONTINUE default: an unsubscribed lifecycle queue is harmless.
+resource "aws_autoscaling_lifecycle_hook" "cpu_queue_terminating" {
+  name                    = "${var.name_prefix}-cpu-queue-terminating"
+  autoscaling_group_name  = aws_autoscaling_group.cpu_queue.name
   lifecycle_transition    = "autoscaling:EC2_INSTANCE_TERMINATING"
   default_result          = "CONTINUE"
   heartbeat_timeout       = var.lifecycle_hook_heartbeat_s
@@ -322,9 +326,9 @@ resource "aws_autoscaling_lifecycle_hook" "cpu_terminating" {
   role_arn                = aws_iam_role.lifecycle_publisher.arn
 }
 
-resource "aws_autoscaling_lifecycle_hook" "gpu_terminating" {
-  name                    = "${var.name_prefix}-gpu-terminating"
-  autoscaling_group_name  = aws_autoscaling_group.gpu.name
+resource "aws_autoscaling_lifecycle_hook" "gpu_queue_terminating" {
+  name                    = "${var.name_prefix}-gpu-queue-terminating"
+  autoscaling_group_name  = aws_autoscaling_group.gpu_queue.name
   lifecycle_transition    = "autoscaling:EC2_INSTANCE_TERMINATING"
   default_result          = "CONTINUE"
   heartbeat_timeout       = var.lifecycle_hook_heartbeat_s

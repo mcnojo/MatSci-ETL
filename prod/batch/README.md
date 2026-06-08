@@ -8,19 +8,19 @@ latency.
 
 ```
 prod/batch/
-├── cli.py                 # operator entry: submit / status / cancel / report
+├── cli.py                 # operator entry: run / submit / status / cancel / report / teardown-fleet
 ├── planner.py             # manifest → shards (pure)
 ├── artifacts.py           # S3 manifest read, report write
 ├── models.py              # BatchManifest, BatchItem
 ├── activities.py          # fetch_manifest_activity, write_report_activity
+├── reports/               # end-of-batch hardware + workflow report
 ├── workflows/
 │   ├── batch_run.py       # BatchRunWorkflow (parent — fan out + report)
 │   └── shard.py           # ShardWorkflow (child — ~50 PDFs)
 ├── config/
 │   └── batch_config.yaml
 └── scripts/
-    ├── submit_batch.sh
-    └── teardown_batch.sh
+    └── user_data.sh.tpl   # worker bootstrap (rendered by terraform)
 ```
 
 ## Manifest
@@ -40,22 +40,27 @@ prod/batch/
 ## CLI
 
 ```bash
-# Submit (--dry-run prints the shard plan without starting a workflow)
-python -m prod.batch.cli submit --manifest s3://chem-lit-artifacts/batches/q2-corpus-a/manifest.json
-python -m prod.batch.cli submit --manifest /path/to/manifest.json --dry-run
+# Full lifecycle: scale fleet, submit, wait, build report, scale down.
+python -m prod.batch.cli run --manifest s3://chem-lit-artifacts/batches/q2-corpus-a/manifest.json
+
+# Submit against an already-running fleet (no scale up/down).
 python -m prod.batch.cli submit --manifest /path/to/manifest.json --wait
+python -m prod.batch.cli submit --manifest /path/to/manifest.json --dry-run
 
 # Inspect
 python -m prod.batch.cli status <batch_id>
-python -m prod.batch.cli report <batch_id>
+python -m prod.batch.cli report <batch_id>     # builds + writes report.json + report.md
 
 # Cancel a running batch (propagates to children)
 python -m prod.batch.cli cancel <batch_id>
+
+# Force ASGs to zero (use if `run` exited without cleanup)
+python -m prod.batch.cli teardown-fleet
 ```
 
-`--wait` blocks until the workflow completes and prints the report URIs.
-Without `--wait`, the CLI prints the workflow ID and exits — track progress
-via `status` or the Temporal UI at `http://localhost:8233`.
+`run` is the primary path; `submit --wait` is useful when the fleet is
+already up (re-runs, debugging). Without `--wait`, `submit` prints the
+workflow ID — track progress via `status` or the Temporal UI.
 
 ## Testing
 

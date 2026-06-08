@@ -44,9 +44,13 @@ GPU_ACTIVITIES = etl_activities
 log = logging.getLogger("worker")
 
 
+VALID_QUEUES = {"cpu", "gpu"}
+
+
 async def run_worker(
     temporal_address: str,
     temporal_namespace: str,
+    queues: set[str],
     max_concurrent_cpu: int,
     max_concurrent_gpu: int,
 ):
@@ -56,27 +60,26 @@ async def run_worker(
         temporal_address, temporal_namespace,
     )
 
-    cpu_worker = Worker(
-        client,
-        task_queue=CPU_TASK_QUEUE,
-        workflows=CPU_WORKFLOWS,
-        activities=CPU_ACTIVITIES,
-        max_concurrent_activities=max_concurrent_cpu,
-        graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
-    )
-    gpu_worker = Worker(
-        client,
-        task_queue=GPU_TASK_QUEUE,
-        activities=GPU_ACTIVITIES,
-        max_concurrent_activities=max_concurrent_gpu,
-        graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
-    )
-
-    log.info(
-        "Starting workers: cpu-task-queue (max_concurrent=%d), "
-        "gpu-task-queue (max_concurrent=%d)",
-        max_concurrent_cpu, max_concurrent_gpu,
-    )
+    workers: list[Worker] = []
+    if "cpu" in queues:
+        workers.append(Worker(
+            client,
+            task_queue=CPU_TASK_QUEUE,
+            workflows=CPU_WORKFLOWS,
+            activities=CPU_ACTIVITIES,
+            max_concurrent_activities=max_concurrent_cpu,
+            graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
+        ))
+        log.info("Polling cpu-task-queue (max_concurrent=%d)", max_concurrent_cpu)
+    if "gpu" in queues:
+        workers.append(Worker(
+            client,
+            task_queue=GPU_TASK_QUEUE,
+            activities=GPU_ACTIVITIES,
+            max_concurrent_activities=max_concurrent_gpu,
+            graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
+        ))
+        log.info("Polling gpu-task-queue (max_concurrent=%d)", max_concurrent_gpu)
 
     shutdown_event = asyncio.Event()
 
@@ -89,16 +92,13 @@ async def run_worker(
         loop.add_signal_handler(sig, _on_signal, sig.name)
 
     async with asyncio.TaskGroup() as tg:
-        cpu_task = tg.create_task(cpu_worker.run())
-        gpu_task = tg.create_task(gpu_worker.run())
+        for w in workers:
+            tg.create_task(w.run())
 
         async def _await_shutdown() -> None:
             await shutdown_event.wait()
-            # Shutdown returns when the worker has fully drained or the
-            # graceful_shutdown_timeout has elapsed. Running shutdowns in
-            # parallel keeps total drain time bounded by the timeout, not
-            # double it.
-            await asyncio.gather(cpu_worker.shutdown(), gpu_worker.shutdown())
+            # Parallel shutdown so total drain is bounded by graceful_shutdown_timeout, not N×.
+            await asyncio.gather(*(w.shutdown() for w in workers))
 
         tg.create_task(_await_shutdown())
 
@@ -107,12 +107,17 @@ async def run_worker(
 @click.option("--config", "config_path", default=None)
 @click.option("--temporal-address", default="localhost:7233", show_default=True)
 @click.option("--temporal-namespace", default="default", show_default=True)
+@click.option(
+    "--queues", "queues_str", default="cpu,gpu", show_default=True,
+    help="Comma-separated task queues to poll: cpu, gpu, or both.",
+)
 @click.option("--max-concurrent-cpu", default=8, show_default=True)
 @click.option("--max-concurrent-gpu", default=4, show_default=True)
 def main(
     config_path: str | None,
     temporal_address: str,
     temporal_namespace: str,
+    queues_str: str,
     max_concurrent_cpu: int,
     max_concurrent_gpu: int,
 ):
@@ -132,9 +137,17 @@ def main(
         max_concurrent_cpu = prod_cfg.get("worker", {}).get("max_concurrent_cpu", max_concurrent_cpu)
         max_concurrent_gpu = prod_cfg.get("worker", {}).get("max_concurrent_gpu", max_concurrent_gpu)
 
+    queues = {q.strip().lower() for q in queues_str.split(",") if q.strip()}
+    invalid = queues - VALID_QUEUES
+    if invalid:
+        raise click.BadParameter(f"unknown queues: {sorted(invalid)} (valid: {sorted(VALID_QUEUES)})")
+    if not queues:
+        raise click.BadParameter("--queues must include at least one of: cpu, gpu")
+
     asyncio.run(run_worker(
         temporal_address=temporal_address,
         temporal_namespace=temporal_namespace,
+        queues=queues,
         max_concurrent_cpu=max_concurrent_cpu,
         max_concurrent_gpu=max_concurrent_gpu,
     ))

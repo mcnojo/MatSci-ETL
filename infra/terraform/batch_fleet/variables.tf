@@ -33,26 +33,26 @@ variable "cpu_pipeline_security_group_id" {
   type        = string
 }
 
-variable "cpu_instance_types" {
-  description = "CPU mixed-instances override list; order hints capacity-optimized."
+variable "cpu_queue_instance_types" {
+  description = "Mixed-instances override list for the cpu-task-queue fleet. Sized for doclayout-yolo + PyMuPDF under bounded torch threads (OMP=2)."
   type        = list(string)
-  default     = ["c7i.large", "c7i.xlarge", "m7i.large"]
+  default     = ["c7i.xlarge", "m7i.xlarge", "c7i.large"]
 }
 
-variable "gpu_instance_types" {
-  description = "GPU mixed-instances override list."
+variable "gpu_queue_instance_types" {
+  description = "Mixed-instances override list for the gpu-task-queue fleet. The work is HTTP IO to vLLM, so CPU sizes suffice (no local GPU)."
   type        = list(string)
-  default     = ["g6.xlarge", "g6.2xlarge", "g5.xlarge"]
+  default     = ["c7i.large", "m7i.large", "c5.large"]
 }
 
-variable "cpu_max_size" {
-  description = "CPU ASG ceiling. Bounded by Standard Spot vCPU quota."
+variable "cpu_queue_max_size" {
+  description = "cpu-task-queue ASG ceiling. Bounded by Standard Spot vCPU quota."
   type        = number
   default     = 2
 }
 
-variable "gpu_max_size" {
-  description = "GPU ASG ceiling. Bounded by G/VT Spot vCPU quota."
+variable "gpu_queue_max_size" {
+  description = "gpu-task-queue ASG ceiling. Also bounded by Standard Spot vCPU quota (no G/VT quota — see gpu_queue_instance_types)."
   type        = number
   default     = 2
 }
@@ -98,38 +98,26 @@ variable "temporal_namespace" {
 }
 
 variable "max_concurrent_cpu" {
-  description = "Per-instance max_concurrent_activities on cpu-task-queue."
+  description = "Per-instance max_concurrent_activities on cpu-task-queue. Sized for c7i.xlarge × OMP=2 (8 threads on 4 cores)."
+  type        = number
+  default     = 4
+}
+
+variable "max_concurrent_gpu" {
+  description = "Per-instance max_concurrent_activities on gpu-task-queue. Bottleneck is vLLM, not the proxy — raise to push more vLLM throughput."
   type        = number
   default     = 8
 }
 
-variable "max_concurrent_gpu" {
-  description = "Per-instance max_concurrent_activities on gpu-task-queue."
+variable "torch_num_threads" {
+  description = "Caps torch/OMP/MKL threads per activity to prevent N×N thread oversubscription under max_concurrent_cpu."
   type        = number
-  default     = 4
+  default     = 2
 }
 
 variable "artifact_bucket" {
   description = "S3 bucket for pipeline artifacts and batch reports."
   type        = string
-}
-
-variable "target_backlog_per_worker" {
-  description = "Target tasks-per-worker for the scaling policy."
-  type        = number
-  default     = 4
-}
-
-variable "scale_in_cooldown_s" {
-  description = "Scale-in cooldown (s)."
-  type        = number
-  default     = 300
-}
-
-variable "scale_out_cooldown_s" {
-  description = "Scale-out cooldown (s)."
-  type        = number
-  default     = 60
 }
 
 variable "lifecycle_hook_heartbeat_s" {

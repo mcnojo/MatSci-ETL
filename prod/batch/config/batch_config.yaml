@@ -1,14 +1,11 @@
-# Batch-mode configuration.
-#
-# The live config (prod/live/config/prod_config.yaml) governs the always-on
-# streaming service. This file governs bounded bulk-job runs.
+# Batch-mode configuration. Live config governs the always-on streaming service;
+# this file governs bounded bulk-job runs.
 
 temporal:
   address: "localhost:7233"
   namespace: "default"
 
-# Where batch report artifacts land. Per-PDF trees still go under
-# the pipeline's storage.s3 root (shared with live).
+# Per-PDF trees go under pipeline storage.s3; reports land under this root.
 report:
   s3_root: "s3://chem-lit-artifacts/batches"
 
@@ -16,15 +13,24 @@ report:
 planner:
   shard_size: 50                    # items per ShardWorkflow
 
-# Concurrency caps applied inside the workflow layer. The real throughput
-# ceiling is on the worker (max_concurrent_activities); these caps just
-# prevent thundering-herd Temporal calls at workflow start.
+# Workflow-layer concurrency caps. Real throughput ceiling is the worker's
+# max_concurrent_activities; these caps prevent thundering-herd at workflow start.
 concurrency:
-  shards_in_flight: 8               # ShardWorkflow children running in parallel
+  shards_in_flight: 8               # ShardWorkflow children in parallel
   pdfs_per_shard_in_flight: 8       # ProcessPdfWorkflow children per shard
 
-# Fleet (consumed by submit_batch.sh / teardown_batch.sh in Phase 5)
+# Fleet (consumed by `cli run` and `cli teardown-fleet`). No autoscaling —
+# `cli run` writes desired_capacity from the manifest, zeroes it at end.
+# Per-queue capacity = clamp(ceil(items / pdfs_per_worker), 1, max_workers).
+#
+# Both ASGs are CPU instances; gpu-task-queue workers are HTTP proxies to vLLM.
 fleet:
-  cpu_asg_name: "ocr-batch-cpu-asg"
-  gpu_asg_name: "ocr-batch-gpu-asg"
+  region: "us-west-2"
+  cpu_queue_asg_name: "ocr-batch-cpu-queue"
+  gpu_queue_asg_name: "ocr-batch-gpu-queue"
+  cpu_queue_pdfs_per_worker: 200    # 1 worker per ~200 PDFs on cpu-task-queue
+  cpu_queue_max_workers: 2          # must match terraform cpu_queue_max_size
+  gpu_queue_pdfs_per_worker: 200
+  gpu_queue_max_workers: 2          # must match terraform gpu_queue_max_size
+  worker_registration_timeout_s: 600
   vllm_role_tag: "vllm-batch"       # vllm_resolve.py picks endpoints by role

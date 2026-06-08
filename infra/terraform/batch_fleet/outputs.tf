@@ -3,24 +3,24 @@ output "region" {
   value       = data.aws_region.current.name
 }
 
-output "cpu_asg_name" {
-  description = "CPU ASG name. Wire into batch_config.yaml fleet.cpu_asg_name."
-  value       = aws_autoscaling_group.cpu.name
+output "cpu_queue_asg_name" {
+  description = "cpu-task-queue ASG name. Wire into batch_config.yaml fleet.cpu_queue_asg_name."
+  value       = aws_autoscaling_group.cpu_queue.name
 }
 
-output "gpu_asg_name" {
-  description = "GPU ASG name. Wire into batch_config.yaml fleet.gpu_asg_name."
-  value       = aws_autoscaling_group.gpu.name
+output "gpu_queue_asg_name" {
+  description = "gpu-task-queue ASG name. Wire into batch_config.yaml fleet.gpu_queue_asg_name."
+  value       = aws_autoscaling_group.gpu_queue.name
 }
 
-output "cpu_asg_arn" {
-  description = "CPU ASG ARN."
-  value       = aws_autoscaling_group.cpu.arn
+output "cpu_queue_asg_arn" {
+  description = "cpu-task-queue ASG ARN."
+  value       = aws_autoscaling_group.cpu_queue.arn
 }
 
-output "gpu_asg_arn" {
-  description = "GPU ASG ARN."
-  value       = aws_autoscaling_group.gpu.arn
+output "gpu_queue_asg_arn" {
+  description = "gpu-task-queue ASG ARN."
+  value       = aws_autoscaling_group.gpu_queue.arn
 }
 
 output "worker_role_arn" {
