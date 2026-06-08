@@ -10,19 +10,19 @@ directory it was launched from.
 Without this anchoring, the worker's CWD silently picks the artifact root,
 which depends on how the user invoked `python -m prod.live.worker` and is a
 recipe for KB output landing in surprising places.
+
+vLLM URL resolution does NOT happen here — `vllm-instance://` URLs propagate
+through workflow input so the worker resolves at activity boundary using its
+own `OCR_VLLM_PREFER_PRIVATE_IP` setting. In-process callers (`etl/cli.py`)
+explicitly invoke `resolve_config_urls` before use.
 """
 
 from pathlib import Path
 
 import yaml
 
-from .vllm_resolve import resolve_config_urls
 
-
-# Path-typed fields in the pipeline config that should be resolved
-# against the config file's directory if they are relative.
-# Format: tuple of (section, key) — both must exist for resolution to apply.
-_RELATIVE_PATH_FIELDS: tuple[tuple[str, str], ...] = (
+_RELATIVE_PATH_FIELDS: tuple[tuple[str, ...], ...] = (
     ("output", "kb_root"),
     ("storage", "local", "root"),  # scaffolding for the future S3 cutover
 )
@@ -48,12 +48,11 @@ def _anchor_relative_paths(cfg: dict, config_dir: Path) -> None:
 
 
 def load_pipeline_config(config_path: str | Path) -> dict:
-    """Load a pipeline YAML, anchor relative paths, resolve vLLM URLs."""
+    """Load a pipeline YAML and anchor relative paths. URLs stay unresolved."""
     config_path = Path(config_path).resolve()
     with open(config_path) as f:
         cfg = yaml.safe_load(f) or {}
     config_dir = config_path.parent
     cfg["_config_dir"] = str(config_dir)
     _anchor_relative_paths(cfg, config_dir)
-    resolve_config_urls(cfg)
     return cfg

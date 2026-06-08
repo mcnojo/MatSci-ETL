@@ -25,11 +25,11 @@ storage:
 
 # Pipeline config (merged with etl/config/pipeline_config.yaml)
 # In prod the pipeline config is loaded from etl/config/pipeline_config.yaml
-# with these overrides applied. The vision_server.base_url is resolved via
-# SSM or tag-based lookup instead of vllm-instance:// files.
+# with these overrides applied. vision_server.base_url stays as the
+# `vllm-instance://` URL — workers resolve at activity boundary via EC2 tag
+# lookup (shared/vllm_resolve.py), driven by OCR_VLLM_ENV_TAG +
+# OCR_VLLM_PREFER_PRIVATE_IP set in the worker's systemd unit.
 pipeline_overrides:
-  vision_server:
-    base_url: null                  # resolved at worker startup via SSM /ocr/chandra/base_url
   output:
     kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
     save_page_images: false         # no need to persist full-page renders in prod

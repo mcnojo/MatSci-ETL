@@ -120,6 +120,12 @@ variable "artifact_bucket" {
   type        = string
 }
 
+variable "tree_llm_ssm_prefix" {
+  description = "SSM parameter prefix for tree_llm API keys. Workers fetch on boot into /etc/ocr-benchmarking/tree_llm.env."
+  type        = string
+  default     = "/ocr-bench/tree_llm"
+}
+
 variable "lifecycle_hook_heartbeat_s" {
   description = "Drain window before lifecycle hook defaults to CONTINUE. >= WORKER_GRACEFUL_SHUTDOWN_TIMEOUT."
   type        = number

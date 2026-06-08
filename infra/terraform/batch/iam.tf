@@ -48,6 +48,26 @@ data "aws_iam_policy_document" "batch_worker" {
     resources = ["*"]
   }
 
+  # tree_llm key fetch at boot.
+  statement {
+    sid     = "TreeLlmSsmRead"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.tree_llm_ssm_prefix}/*",
+    ]
+  }
+
+  statement {
+    sid       = "SsmKmsDecrypt"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+  }
+
   # Drain handler reads from the lifecycle SQS queue.
   statement {
     sid = "LifecycleQueueDrain"

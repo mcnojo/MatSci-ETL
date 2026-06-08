@@ -1,33 +1,107 @@
-"""Resolve vllm-instance:// URLs to http:// using tracked instance IPs."""
+"""Resolve vllm-instance:// URLs against EC2 instance tags.
 
-from pathlib import Path
+URL form:           vllm-instance://<model>:<port>/<path>
+EC2 tag filter:     tag:role=vllm-<model>-<env_tag>, state=running
+
+Env knobs (each can be overridden per-call):
+    OCR_VLLM_ENV_TAG            - dev | prod (default: prod)
+    OCR_VLLM_PREFER_PRIVATE_IP  - 1 to return private IP (default: 0 — public)
+
+Mac-side callers (operator's laptop) leave both unset → resolves to public IP
+of the prod vLLM box. Worker user-data sets PREFER_PRIVATE_IP=1 so in-VPC
+workers route over the private network.
+"""
+
+import os
+import time
+from threading import Lock
 from urllib.parse import urlparse
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_INSTANCE_DIR = _REPO_ROOT / "vllm" / "aws" / "instances"
+import boto3
 
 
-def resolve_vllm_url(url: str) -> str:
-    """Resolve ``vllm-instance://<name>:<port>/<path>`` to ``http://<ip>:<port>/<path>``.
+_DEFAULT_ENV_TAG = "prod"
+_CACHE_TTL_S = 300
 
-    Reads the IP from ``vllm/aws/instances/<name>.ip`` (written by launch.sh).
-    Non-vllm-instance URLs pass through unchanged.
+_cache: dict[tuple[str, str], tuple[dict, float]] = {}
+_cache_lock = Lock()
+
+
+def _truthy(s: str | None) -> bool:
+    return (s or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _describe_vllm_instance(model: str, env_tag: str) -> dict:
+    """Return the running EC2 instance tagged role=vllm-<model>-<env_tag>.
+
+    Result is cached for `_CACHE_TTL_S` so a long-running worker doesn't
+    hit the EC2 API on every call. Raises if zero or multiple matches.
+    """
+    key = (model, env_tag)
+    now = time.time()
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and (now - entry[1]) < _CACHE_TTL_S:
+            return entry[0]
+
+    role_tag = f"vllm-{model}-{env_tag}"
+    ec2 = boto3.client("ec2")
+    resp = ec2.describe_instances(Filters=[
+        {"Name": "tag:role", "Values": [role_tag]},
+        {"Name": "instance-state-name", "Values": ["running"]},
+    ])
+    instances = [
+        i for r in resp.get("Reservations", []) for i in r.get("Instances", [])
+    ]
+    if not instances:
+        raise LookupError(
+            f"no running EC2 instance tagged role={role_tag!r}. "
+            f"apply common/vllm with env_tag={env_tag!r} first."
+        )
+    if len(instances) > 1:
+        ids = [i["InstanceId"] for i in instances]
+        raise LookupError(
+            f"multiple running instances tagged role={role_tag!r}: {ids}. "
+            f"terminate the extras."
+        )
+    inst = instances[0]
+    with _cache_lock:
+        _cache[key] = (inst, now)
+    return inst
+
+
+def resolve_vllm_url(
+    url: str,
+    *,
+    env_tag: str | None = None,
+    prefer_private_ip: bool | None = None,
+) -> str:
+    """Resolve `vllm-instance://<model>:<port>/<path>` to `http://<ip>:<port>/<path>`.
+
+    Non-`vllm-instance://` URLs pass through unchanged — safe to call on already-
+    resolved URLs (idempotent at activity boundaries).
     """
     if not url.startswith("vllm-instance://"):
         return url
+
+    env_tag = env_tag or os.environ.get("OCR_VLLM_ENV_TAG") or _DEFAULT_ENV_TAG
+    if prefer_private_ip is None:
+        prefer_private_ip = _truthy(os.environ.get("OCR_VLLM_PREFER_PRIVATE_IP"))
+
     parsed = urlparse(url)
-    name = parsed.hostname
-    if not name:
-        raise ValueError(f"Bad vllm-instance URL (no host): {url!r}")
-    ip_file = _INSTANCE_DIR / f"{name}.ip"
-    if not ip_file.exists():
-        raise FileNotFoundError(
-            f"No IP file at {ip_file}. Run `vllm/aws/launch.sh {name}` first, "
-            f"or set vision_server.base_url to a literal http://... URL."
-        )
-    ip = ip_file.read_text().strip()
+    model = parsed.hostname
+    if not model:
+        raise ValueError(f"bad vllm-instance URL (no host): {url!r}")
+
+    inst = _describe_vllm_instance(model, env_tag)
+    ip = inst.get("PrivateIpAddress") if prefer_private_ip else inst.get("PublicIpAddress")
     if not ip:
-        raise ValueError(f"{ip_file} is empty")
+        which = "private" if prefer_private_ip else "public"
+        raise LookupError(
+            f"instance {inst['InstanceId']} has no {which} IP. "
+            f"check the SG/VPC config in common/vllm."
+        )
+
     port = f":{parsed.port}" if parsed.port else ""
     return f"http://{ip}{port}{parsed.path or ''}"
 
@@ -38,3 +112,9 @@ def resolve_config_urls(config: dict) -> dict:
     if isinstance(vs.get("base_url"), str):
         vs["base_url"] = resolve_vllm_url(vs["base_url"])
     return config
+
+
+def clear_cache() -> None:
+    """Test hook — drop the EC2 lookup cache."""
+    with _cache_lock:
+        _cache.clear()

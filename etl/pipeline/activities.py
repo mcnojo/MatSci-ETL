@@ -19,6 +19,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
+from shared.vllm_resolve import resolve_vllm_url
+
 _T = TypeVar("_T")
 
 
@@ -264,8 +266,11 @@ async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
 @activity.defn(name="process-pdf_chandra-vision-call")
 async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOutput:
     activity.heartbeat()
+    # Worker resolves at activity boundary so OCR_VLLM_PREFER_PRIVATE_IP (in-VPC
+    # workers) routes over the private network without the CLI knowing or caring.
+    base_url = resolve_vllm_url(input.base_url)
     b64 = _image_to_b64(input.image_path)
-    client = AsyncOpenAI(base_url=input.base_url, api_key=input.api_key)
+    client = AsyncOpenAI(base_url=base_url, api_key=input.api_key)
     started_at = time.time()
     response = await _await_with_heartbeats(
         client.chat.completions.create(
