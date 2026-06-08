@@ -1,6 +1,6 @@
-# `batch_fleet`
+# `batch`
 
-Two Spot ASGs (cpu-task-queue + gpu-task-queue) for `prod/batch/`. Phase 5 of `INFRA_PROVISIONING_PLAN.md`. Inert until applied.
+Two Spot ASGs (cpu-task-queue + gpu-task-queue) for `prod/batch/`. Phase 5 of `INFRA_PROVISIONING_PLAN.md` (formerly `batch_fleet/`, renamed as part of `AWS_DEPLOYMENT_PLAN.md` Phase A). Inert until applied.
 
 Both ASGs run CPU instances. The gpu-task-queue workers are HTTP clients to vLLM — no local GPU. The vLLM endpoint lives on its own box (Phase 6 manages the batch-tuned one).
 
@@ -23,15 +23,14 @@ aws ec2 describe-instances --region us-west-2 \
 ## Apply
 
 ```bash
-cd infra/terraform/batch_fleet
-cat > terraform.tfvars <<EOF
+cat > infra/terraform/batch/terraform.tfvars <<EOF
 artifact_bucket                = "chem-lit-artifacts"
 temporal_address               = "10.0.x.y:7233"
 cpu_pipeline_security_group_id = "sg-xxxxxxxxxxxxxxxxx"
 EOF
-terraform init
-terraform plan
-terraform apply
+bin/tf.sh batch init
+bin/tf.sh batch plan
+bin/tf.sh batch apply
 ```
 
 ## What gets created (~20 resources)
@@ -66,7 +65,7 @@ INSTANCE_ID=$(aws ec2 describe-instances --region us-west-2 \
 aws ssm start-session --target "$INSTANCE_ID"
 
 # Destroy — cleanly removes the cross-SG ingress rule
-terraform destroy
+bin/tf.sh batch destroy
 ```
 
 ## Cost
