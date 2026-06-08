@@ -1,41 +1,79 @@
 """BatchRunWorkflow — top-level parent for a batch run.
 
-Flow:
-  1. fetch_manifest_activity reads the manifest from S3 (or local).
-  2. Verify the input batch_id matches the manifest's batch_id (typo guard).
-  3. Apply manifest-level config_overrides on top of the pipeline config.
-  4. planner.shard_manifest produces shards.
-  5. For each shard, execute_child_workflow(ShardWorkflow) with bounded
-     concurrency (asyncio.Semaphore) so we don't issue thousands of
-     start_child_workflow calls into Temporal at once.
-  6. Aggregate per-shard ItemResults into the batch report.
-  7. write_report_activity emits summary.json, per_item.csv, failures.jsonl
-     under s3://<report_root>/<batch_id>/report/.
+Phase C: the workflow owns the entire batch lifecycle. A single workflow
+start (from `cli submit`, from the Phase D Lambda, or from anywhere) is
+sufficient — no CLI babysitting.
 
-History bound: shards × 3 events (start + complete + meta) ≈ 60 events for a
-20-shard / 1000-PDF batch — well under the 50k event limit. continue_as_new
-is therefore not required at the 1000-PDF operator ceiling.
+Flow (when input.manages_fleet):
+  1. fetch_manifest_activity reads the manifest from S3 (or local) and
+     verifies its batch_id matches the input.
+  2. scale_fleet_up_activity drives both batch ASGs to their target counts.
+  3. await_pollers_activity blocks until activity pollers register on the
+     cpu and gpu task queues (non-retryable timeout).
+  4. ShardWorkflow children fan out with bounded concurrency.
+  5. write_report_activity emits summary.json + per_item.csv + failures.jsonl.
+  6. build_report_activity walks Temporal + CloudWatch into report.json +
+     report.md (best-effort; failure is logged, doesn't fail the batch).
+  7. finally: scale_fleet_down_activity zeroes both ASGs. Uses
+     ActivityCancellationType.ABANDON so workflow cancellation does NOT
+     cancel the teardown — the activity runs to completion regardless.
+
+When input does not specify a fleet (local dev, `cli submit` against a
+pre-running fleet), steps 2/3/7 are skipped. The rich-report step is also
+skipped because it depends on a `region` for CloudWatch.
+
+History bound: shards × 3 events (start + complete + meta) ≈ 60 events for
+a 20-shard / 1000-PDF batch — well under the 50k event limit. Lifecycle
+adds ~8 more events. continue_as_new not required at the 1000-PDF ceiling.
+
+Known caveat: build_report_activity runs while the BatchRunWorkflow is still
+RUNNING, so the parent's own duration shows as null in the embedded report.
+Operators wanting the final parent duration re-run `cli report <batch_id>`
+after completion.
 """
 
 import asyncio
+from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import WorkflowIDReusePolicy
-from temporalio.exceptions import ApplicationError, ChildWorkflowError
+from temporalio.exceptions import (
+    ActivityError,
+    ApplicationError,
+    ChildWorkflowError,
+)
 
 with workflow.unsafe.imports_passed_through():
-    from prod.batch.activities import (
+    from prod.batch.planner import shard_manifest, shard_workflow_id
+    from prod.batch.workflows.activities.await_pollers import (
+        AwaitPollersInput,
+        await_pollers_activity,
+    )
+    from prod.batch.workflows.activities.build_report import (
+        BuildReportInput,
+        build_report_activity,
+    )
+    from prod.batch.workflows.activities.fetch_manifest import (
         FetchManifestInput,
-        WriteReportInput,
         fetch_manifest_activity,
+    )
+    from prod.batch.workflows.activities.scale_fleet import (
+        ScaleFleetDownInput,
+        ScaleFleetUpInput,
+        scale_fleet_down_activity,
+        scale_fleet_up_activity,
+    )
+    from prod.batch.workflows.activities.write_report import (
+        WriteReportInput,
         write_report_activity,
     )
-    from prod.batch.planner import shard_manifest, shard_workflow_id
     from prod.shared_infra.task_queues import (
         CPU_ACTIVITY_TIMEOUT,
         CPU_HEARTBEAT_TIMEOUT,
         CPU_TASK_QUEUE,
         DEFAULT_RETRY_POLICY,
+        GPU_TASK_QUEUE,
+        NO_RETRY_POLICY,
         SHARD_WORKFLOW_EXECUTION_TIMEOUT,
     )
 
@@ -49,13 +87,25 @@ with workflow.unsafe.imports_passed_through():
     from .shard import ShardWorkflow
 
 
+# Lifecycle activities own their own retry posture. Scale-up bounds short; the
+# activity itself classifies quota errors as non_retryable. Await-pollers gets
+# the full registration window (caller's timeout_s + headroom) since it's the
+# longest legitimate wait in the lifecycle. Teardown gets a generous window so
+# transient AWS hiccups don't drop us into a non-zero fleet on cancellation.
+_SCALE_UP_TIMEOUT = timedelta(minutes=2)
+_SCALE_DOWN_TIMEOUT = timedelta(minutes=5)
+_AWAIT_POLLERS_BUFFER = timedelta(minutes=2)        # added to caller's timeout_s
+_BUILD_REPORT_TIMEOUT = timedelta(minutes=15)
+
+
 @workflow.defn
 class BatchRunWorkflow:
-    """Parent workflow that fans a manifest out to ShardWorkflow children."""
+    """Parent workflow that fans a manifest out to ShardWorkflow children
+    and owns the batch fleet's lifecycle."""
 
     @workflow.run
     async def run(self, input: BatchRunInput) -> BatchRunOutput:
-        # Stage 1: fetch + validate the manifest
+        # Stage 1: fetch + validate manifest.
         fetch_out = await workflow.execute_activity(
             fetch_manifest_activity,
             FetchManifestInput(manifest_uri=input.manifest_uri),
@@ -65,7 +115,6 @@ class BatchRunWorkflow:
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         manifest = fetch_out.manifest
-
         if manifest.batch_id != input.batch_id:
             raise ApplicationError(
                 f"manifest batch_id ({manifest.batch_id!r}) does not match "
@@ -73,33 +122,197 @@ class BatchRunWorkflow:
                 non_retryable=True,
             )
 
-        # Layer manifest config_overrides on top of the resolved pipeline config
         merged_config = _merge_config(input.pipeline_config, manifest.config_overrides)
-
-        # Stage 2: shard
         shards = shard_manifest(manifest, shard_size=input.shard_size)
         workflow.logger.info(
-            "batch %s: %d items -> %d shards (shard_size=%d, shards_in_flight=%d)",
+            "batch %s: %d items -> %d shards (shard_size=%d, shards_in_flight=%d, manages_fleet=%s)",
             input.batch_id, len(manifest.items), len(shards),
-            input.shard_size, input.shards_in_flight,
+            input.shard_size, input.shards_in_flight, input.manages_fleet,
         )
 
-        # Stage 3: fan out shards with bounded concurrency
-        sem = asyncio.Semaphore(input.shards_in_flight)
+        # Lifecycle is all-or-nothing: scale up + wait for pollers + scale down
+        # only when the caller supplied fleet coords. Local dev and `cli submit`
+        # against a pre-running fleet bypass these steps.
+        manages_fleet = input.manages_fleet
+        cancelled = False
+        main_exc: BaseException | None = None
+        result: BatchRunOutput | None = None
+
+        try:
+            if manages_fleet:
+                # Stage 2: scale fleet up.
+                await workflow.execute_activity(
+                    scale_fleet_up_activity,
+                    ScaleFleetUpInput(
+                        region=input.region,
+                        cpu_queue_asg_name=input.cpu_queue_asg_name,
+                        cpu_queue_desired=input.cpu_queue_desired,
+                        gpu_queue_asg_name=input.gpu_queue_asg_name,
+                        gpu_queue_desired=input.gpu_queue_desired,
+                    ),
+                    task_queue=CPU_TASK_QUEUE,
+                    start_to_close_timeout=_SCALE_UP_TIMEOUT,
+                    heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
+
+                # Stage 3: wait for pollers to register.
+                await workflow.execute_activity(
+                    await_pollers_activity,
+                    AwaitPollersInput(
+                        namespace=workflow.info().namespace,
+                        task_queues=[CPU_TASK_QUEUE, GPU_TASK_QUEUE],
+                        timeout_s=input.worker_registration_timeout_s,
+                    ),
+                    task_queue=CPU_TASK_QUEUE,
+                    start_to_close_timeout=(
+                        timedelta(seconds=input.worker_registration_timeout_s) + _AWAIT_POLLERS_BUFFER
+                    ),
+                    heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                    retry_policy=NO_RETRY_POLICY,    # activity classifies its own retry-ability
+                )
+
+            # Stage 4: fan out shards.
+            shard_results = await self._fan_out_shards(
+                input.batch_id, shards, merged_config,
+                input.shards_in_flight, input.pdfs_per_shard_in_flight,
+            )
+
+            # Stage 5: aggregate + write summary report.
+            all_items: list[ItemResult] = []
+            for shard_out in shard_results:
+                if shard_out is not None:
+                    all_items.extend(shard_out.items)
+            success_count = sum(1 for r in all_items if r.status == "success")
+            failure_count = len(all_items) - success_count
+
+            summary = {
+                "batch_id": input.batch_id,
+                "total_items": len(all_items),
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "shards": [
+                    {
+                        "shard_index": s.shard_index,
+                        "success": sum(1 for r in s.items if r.status == "success"),
+                        "failure": sum(1 for r in s.items if r.status == "failure"),
+                    }
+                    for s in shard_results if s is not None
+                ],
+            }
+            per_item = [_per_item_row(r) for r in all_items]
+            failures = [_failure_row(r) for r in all_items if r.status == "failure"]
+
+            write_out = await workflow.execute_activity(
+                write_report_activity,
+                WriteReportInput(
+                    report_root=input.report_root,
+                    batch_id=input.batch_id,
+                    summary=summary,
+                    per_item=per_item,
+                    failures=failures,
+                ),
+                task_queue=CPU_TASK_QUEUE,
+                start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+                heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+
+            # Stage 6: rich report — best-effort. Needs `region` for CloudWatch,
+            # so it's skipped in the no-fleet mode.
+            if manages_fleet:
+                try:
+                    await workflow.execute_activity(
+                        build_report_activity,
+                        BuildReportInput(
+                            batch_id=input.batch_id,
+                            region=input.region,
+                            report_root=input.report_root,
+                            pull_hardware=True,
+                        ),
+                        task_queue=CPU_TASK_QUEUE,
+                        start_to_close_timeout=_BUILD_REPORT_TIMEOUT,
+                        heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                        retry_policy=DEFAULT_RETRY_POLICY,
+                    )
+                except ActivityError as exc:
+                    workflow.logger.warning(
+                        "build_report_activity failed (non-fatal — re-runnable via `cli report %s`): %s",
+                        input.batch_id, exc,
+                    )
+
+            result = BatchRunOutput(
+                batch_id=input.batch_id,
+                total_items=len(all_items),
+                success_count=success_count,
+                failure_count=failure_count,
+                report_uris=write_out.report_uris,
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            main_exc = exc
+
+        # Teardown — runs even on cancellation. ABANDON so the workflow's
+        # cancelled state doesn't cancel the activity itself; the await may
+        # raise but the activity has already been scheduled and will execute
+        # on a worker.
+        if manages_fleet:
+            try:
+                teardown_out = await workflow.execute_activity(
+                    scale_fleet_down_activity,
+                    ScaleFleetDownInput(
+                        region=input.region,
+                        cpu_queue_asg_name=input.cpu_queue_asg_name,
+                        gpu_queue_asg_name=input.gpu_queue_asg_name,
+                    ),
+                    task_queue=CPU_TASK_QUEUE,
+                    start_to_close_timeout=_SCALE_DOWN_TIMEOUT,
+                    heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                    cancellation_type=workflow.ActivityCancellationType.ABANDON,
+                )
+                if not (teardown_out.cpu_ok and teardown_out.gpu_ok):
+                    workflow.logger.warning(
+                        "scale_fleet_down partial: cpu_ok=%s gpu_ok=%s cpu_err=%s gpu_err=%s",
+                        teardown_out.cpu_ok, teardown_out.gpu_ok,
+                        teardown_out.cpu_error, teardown_out.gpu_error,
+                    )
+            except Exception as exc:
+                # ABANDON detached the activity — even if the await raised
+                # (e.g. CancelledError because the workflow is cancelled),
+                # the scale-down will still run on a worker.
+                workflow.logger.warning(
+                    "teardown await raised (activity is ABANDON-detached and runs regardless): %s",
+                    exc,
+                )
+
+        if cancelled:
+            raise asyncio.CancelledError
+        if main_exc is not None:
+            raise main_exc
+        assert result is not None
+        return result
+
+    async def _fan_out_shards(
+        self, batch_id: str, shards: list, merged_config: dict,
+        shards_in_flight: int, pdfs_per_shard_in_flight: int,
+    ) -> list[ShardOutput | None]:
+        sem = asyncio.Semaphore(shards_in_flight)
         shard_results: list[ShardOutput | None] = [None] * len(shards)
 
         async def run_shard(shard_idx: int) -> None:
-            child_id = shard_workflow_id(input.batch_id, shard_idx)
+            child_id = shard_workflow_id(batch_id, shard_idx)
             async with sem:
                 try:
                     out: ShardOutput = await workflow.execute_child_workflow(
                         ShardWorkflow.run,
                         ShardInput(
-                            batch_id=input.batch_id,
+                            batch_id=batch_id,
                             shard_index=shard_idx,
                             items=shards[shard_idx],
                             pipeline_config=merged_config,
-                            max_in_flight=input.pdfs_per_shard_in_flight,
+                            max_in_flight=pdfs_per_shard_in_flight,
                         ),
                         id=child_id,
                         task_queue=CPU_TASK_QUEUE,
@@ -108,9 +321,9 @@ class BatchRunWorkflow:
                     )
                     shard_results[shard_idx] = out
                 except ChildWorkflowError as exc:
-                    # A shard-level failure (rare — shards swallow per-PDF
-                    # failures internally) is surfaced as failures for every
-                    # item in that shard so the report stays complete.
+                    # Shard-level failure is rare (shards swallow per-PDF
+                    # failures). Surface as per-item failures so the report
+                    # is still complete.
                     workflow.logger.error(
                         "ShardWorkflow %s failed: %s", child_id, exc,
                     )
@@ -131,56 +344,7 @@ class BatchRunWorkflow:
         async with asyncio.TaskGroup() as tg:
             for i in range(len(shards)):
                 tg.create_task(run_shard(i))
-
-        # Stage 4: aggregate
-        all_items: list[ItemResult] = []
-        for shard_out in shard_results:
-            if shard_out is not None:
-                all_items.extend(shard_out.items)
-
-        success_count = sum(1 for r in all_items if r.status == "success")
-        failure_count = len(all_items) - success_count
-
-        summary = {
-            "batch_id": input.batch_id,
-            "total_items": len(all_items),
-            "success_count": success_count,
-            "failure_count": failure_count,
-            "shards": [
-                {
-                    "shard_index": s.shard_index,
-                    "success": sum(1 for r in s.items if r.status == "success"),
-                    "failure": sum(1 for r in s.items if r.status == "failure"),
-                }
-                for s in shard_results if s is not None
-            ],
-        }
-        per_item = [_per_item_row(r) for r in all_items]
-        failures = [_failure_row(r) for r in all_items if r.status == "failure"]
-
-        # Stage 5: write report
-        write_out = await workflow.execute_activity(
-            write_report_activity,
-            WriteReportInput(
-                report_root=input.report_root,
-                batch_id=input.batch_id,
-                summary=summary,
-                per_item=per_item,
-                failures=failures,
-            ),
-            task_queue=CPU_TASK_QUEUE,
-            start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
-            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
-            retry_policy=DEFAULT_RETRY_POLICY,
-        )
-
-        return BatchRunOutput(
-            batch_id=input.batch_id,
-            total_items=len(all_items),
-            success_count=success_count,
-            failure_count=failure_count,
-            report_uris=write_out.report_uris,
-        )
+        return shard_results
 
 
 def _merge_config(base: dict, overrides: dict | None) -> dict:

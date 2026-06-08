@@ -8,7 +8,7 @@ from a ProcessPdfWorkflow child.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..models import BatchItem
 
@@ -57,6 +57,37 @@ class BatchRunInput(BaseModel):
     shard_size: int = 50
     shards_in_flight: int = 8        # bounded concurrency over ShardWorkflow children
     pdfs_per_shard_in_flight: int = 8
+
+    # Fleet lifecycle. Populated together (all-or-none); when omitted, the
+    # workflow assumes the caller is managing the fleet out-of-band (local
+    # dev, `cli submit` against a pre-running fleet) and skips scale-up,
+    # poller wait, and scale-down. Values flow from batch_config.yaml's
+    # `fleet` block through the CLI/Lambda into the workflow input.
+    region: Optional[str] = None
+    cpu_queue_asg_name: Optional[str] = None
+    gpu_queue_asg_name: Optional[str] = None
+    cpu_queue_desired: Optional[int] = None
+    gpu_queue_desired: Optional[int] = None
+    worker_registration_timeout_s: int = 600
+
+    @model_validator(mode="after")
+    def _fleet_all_or_none(self) -> "BatchRunInput":
+        fleet_fields = (
+            self.region, self.cpu_queue_asg_name, self.gpu_queue_asg_name,
+            self.cpu_queue_desired, self.gpu_queue_desired,
+        )
+        n_set = sum(1 for f in fleet_fields if f is not None)
+        if 0 < n_set < len(fleet_fields):
+            raise ValueError(
+                "Fleet fields are all-or-none. Set every one of {region, "
+                "cpu_queue_asg_name, gpu_queue_asg_name, cpu_queue_desired, "
+                "gpu_queue_desired} to manage the fleet, or leave all None."
+            )
+        return self
+
+    @property
+    def manages_fleet(self) -> bool:
+        return self.region is not None
 
 
 class BatchRunOutput(BaseModel):

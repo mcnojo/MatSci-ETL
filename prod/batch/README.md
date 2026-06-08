@@ -8,19 +8,25 @@ latency.
 
 ```
 prod/batch/
-├── cli.py                 # operator entry: run / submit / status / cancel / report / teardown-fleet
-├── planner.py             # manifest → shards (pure)
-├── artifacts.py           # S3 manifest read, report write
-├── models.py              # BatchManifest, BatchItem
-├── activities.py          # fetch_manifest_activity, write_report_activity
-├── reports/               # end-of-batch hardware + workflow report
+├── cli.py                              # operator entry: submit / status / cancel / report / wait-for-workers
+├── planner.py                          # manifest → shards (pure)
+├── artifacts.py                        # S3 manifest read, report write
+├── models.py                           # BatchManifest, BatchItem
+├── reports/                            # end-of-batch hardware + workflow report
 ├── workflows/
-│   ├── batch_run.py       # BatchRunWorkflow (parent — fan out + report)
-│   └── shard.py           # ShardWorkflow (child — ~50 PDFs)
+│   ├── batch_run.py                    # BatchRunWorkflow (parent — lifecycle + fan out + report)
+│   ├── shard.py                        # ShardWorkflow (child — ~50 PDFs)
+│   ├── models.py                       # BatchRunInput/Output, ShardInput/Output, ItemResult
+│   └── activities/                     # per-stage activities
+│       ├── fetch_manifest.py
+│       ├── write_report.py
+│       ├── scale_fleet.py              # scale_fleet_up + scale_fleet_down
+│       ├── await_pollers.py            # blocks until workers register
+│       └── build_report.py             # Temporal + CloudWatch → report.json/md
 ├── config/
 │   └── batch_config.yaml
 └── scripts/
-    └── user_data.sh.tpl   # worker bootstrap (rendered by terraform)
+    └── user_data.sh.tpl                # worker bootstrap (rendered by terraform)
 ```
 
 ## Manifest
@@ -40,27 +46,27 @@ prod/batch/
 ## CLI
 
 ```bash
-# Full lifecycle: scale fleet, submit, wait, build report, scale down.
-python -m prod.batch.cli run --manifest s3://chem-lit-artifacts/batches/q2-corpus-a/manifest.json
+# Start a batch — workflow owns the full lifecycle (scale up, await pollers,
+# fan out, write reports, scale down). Default waits for completion.
+python -m prod.batch.cli submit --manifest s3://chem-lit-artifacts/batches/q2-corpus-a/manifest.json
 
-# Submit against an already-running fleet (no scale up/down).
-python -m prod.batch.cli submit --manifest /path/to/manifest.json --wait
-python -m prod.batch.cli submit --manifest /path/to/manifest.json --dry-run
+# Submit against a pre-existing fleet (local dev / debug runs).
+python -m prod.batch.cli submit --manifest /path/to/manifest.json --no-manage-fleet
 
 # Inspect
 python -m prod.batch.cli status <batch_id>
-python -m prod.batch.cli report <batch_id>     # builds + writes report.json + report.md
+python -m prod.batch.cli report <batch_id>     # re-runs the rich report build
 
-# Cancel a running batch (propagates to children)
+# Cancel a running batch (propagates to children; finally block scales down)
 python -m prod.batch.cli cancel <batch_id>
 
-# Force ASGs to zero (use if `run` exited without cleanup)
-python -m prod.batch.cli teardown-fleet
+# Diagnostic: wait until activity pollers register on the named queues
+python -m prod.batch.cli wait-for-workers
 ```
 
-`run` is the primary path; `submit --wait` is useful when the fleet is
-already up (re-runs, debugging). Without `--wait`, `submit` prints the
-workflow ID — track progress via `status` or the Temporal UI.
+The Phase D Lambda is the production trigger (S3 PUT on manifest.json fires
+it). `cli submit` is kept for power users / debug runs where bypassing the
+Lambda is useful.
 
 ## Testing
 
@@ -68,7 +74,7 @@ workflow ID — track progress via `status` or the Temporal UI.
 
 ```bash
 python -m tests.test_batch_planner       # 10 tests: sharding, ID format, validation
-python -m tests.test_batch_workflows     # 14 tests: pure helpers (merge_config, rows, truncate)
+python -m tests.test_batch_workflows     # pure helpers (merge_config, rows, truncate)
 ```
 
 **Integration smoke test** (requires the local docker-compose Temporal stack
@@ -83,12 +89,14 @@ python -m tests.integration.test_batch_e2e
 ```
 
 The integration test submits a 1-PDF manifest pointing at `etl/hybrid.pdf`,
-runs it end-to-end through `BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow`,
-and asserts the report files are written. It skips politely if Temporal or
-vLLM is unavailable.
+runs it end-to-end through `BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow`
+with `--no-manage-fleet` semantics (fleet field unset), and asserts the
+summary report files are written. It skips politely if Temporal or vLLM is
+unavailable.
 
 ## Phasing
 
-See `BATCH_PROCESSING_PLAN.md` at the repo root for the multi-phase build
-plan. Phases 3-4 (skeleton + workflows) are now in place; phases 5-6
-(autoscaling fleet + batch-isolated vLLM endpoint) are still pending.
+See `AWS_DEPLOYMENT_PLAN.md` at the repo root for the deployment plan.
+Phase C (this commit) moves the batch lifecycle into `BatchRunWorkflow`.
+Phase D adds the Lambda trigger; Phase E ships the operator-facing
+`bin/` scripts.

@@ -14,6 +14,7 @@ retried by Temporal on a different worker via the heartbeat-timeout path.
 
 import asyncio
 import logging
+import os
 import signal
 
 import click
@@ -21,7 +22,7 @@ import yaml
 from temporalio.worker import Worker
 
 from etl.pipeline.activities import activities as etl_activities
-from prod.batch.activities import activities as batch_activities
+from prod.batch.workflows.activities import activities as batch_activities
 from prod.batch.workflows.batch_run import BatchRunWorkflow
 from prod.batch.workflows.shard import ShardWorkflow
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
@@ -54,6 +55,12 @@ async def run_worker(
     max_concurrent_cpu: int,
     max_concurrent_gpu: int,
 ):
+    # Activities (await_pollers, build_report) need a Temporal client of their
+    # own to drive DescribeTaskQueue / fetch_history_events. Export the
+    # worker's own coords so they don't re-discover them.
+    os.environ["TEMPORAL_ADDRESS"] = temporal_address
+    os.environ["TEMPORAL_NAMESPACE"] = temporal_namespace
+
     client = await connect_temporal(temporal_address, namespace=temporal_namespace)
     log.info(
         "Connected to Temporal at %s (namespace=%s)",

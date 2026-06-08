@@ -1,14 +1,30 @@
-"""Operator CLI for the batch path."""
+"""Operator CLI for the batch path.
+
+Phase C: the workflow owns the batch lifecycle (scale up, await pollers,
+fan out, write report, scale down). The CLI is now a thin entry point —
+`submit` is the primary command, kept for power users / debug runs (the
+Phase D Lambda is the production trigger).
+
+Commands:
+  submit            Start a BatchRunWorkflow. Default waits for completion.
+  status            Describe an in-flight or completed batch.
+  cancel            Request graceful cancellation (workflow's finally
+                    block tears the fleet down).
+  report            Re-run the rich report build (Temporal + CloudWatch).
+                    Use after batch completion if the embedded build_report
+                    activity didn't run (no-fleet mode) or failed.
+  wait-for-workers  Diagnostic — block until activity pollers register on
+                    the named task queues. Useful when debugging worker
+                    bootstrap.
+"""
 
 import asyncio
 import logging
-import math
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
-import boto3
 import click
 import yaml
 from rich.console import Console
@@ -83,25 +99,31 @@ def _load_yaml(path: str | None) -> dict:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
 
-def _fleet_config(batch_cfg: dict) -> dict:
+def _fleet_kwargs(batch_cfg: dict, *, manage_fleet: bool) -> dict:
+    """Pull the fleet block out of batch_config.yaml into BatchRunInput kwargs.
+
+    `manage_fleet=False` returns an empty dict (workflow skips lifecycle) —
+    used by the debug `submit --no-manage-fleet` path.
+    """
+    if not manage_fleet:
+        return {}
     fleet = batch_cfg.get("fleet") or {}
-    for k in ("cpu_queue_asg_name", "gpu_queue_asg_name"):
-        if not fleet.get(k):
-            raise click.BadParameter(f"batch_config.yaml: fleet.{k} required")
-    return fleet
-
-
-def _size_workers(items: int, per_worker: int, max_workers: int) -> int:
-    """clamp(ceil(items / per_worker), 1, max_workers)."""
-    return max(1, min(max_workers, math.ceil(items / per_worker)))
-
-
-async def _scale_asg(region: str, asg_name: str, n: int) -> None:
-    def _set() -> None:
-        boto3.client("autoscaling", region_name=region).set_desired_capacity(
-            AutoScalingGroupName=asg_name, DesiredCapacity=n,
+    required = ("region", "cpu_queue_asg_name", "gpu_queue_asg_name",
+                "cpu_queue_max_workers", "gpu_queue_max_workers")
+    missing = [k for k in required if not fleet.get(k)]
+    if missing:
+        raise click.BadParameter(
+            f"batch_config.yaml: fleet block is missing required keys: {missing}. "
+            f"Pass --no-manage-fleet to run against a pre-existing fleet."
         )
-    await asyncio.to_thread(_set)
+    return {
+        "region": fleet["region"],
+        "cpu_queue_asg_name": fleet["cpu_queue_asg_name"],
+        "gpu_queue_asg_name": fleet["gpu_queue_asg_name"],
+        "cpu_queue_desired": fleet["cpu_queue_max_workers"],
+        "gpu_queue_desired": fleet["gpu_queue_max_workers"],
+        "worker_registration_timeout_s": fleet.get("worker_registration_timeout_s", 600),
+    }
 
 
 async def _has_activity_pollers(client: Client, namespace: str, task_queue: str) -> bool:
@@ -159,6 +181,7 @@ def _print_plan(manifest, shard_size: int) -> None:
 
 async def _start_workflow(
     ctx_obj: dict, client: Client, manifest, manifest_uri: str,
+    *, manage_fleet: bool,
 ) -> tuple[object, str]:
     batch_cfg = ctx_obj["batch_cfg"]
     report_root = batch_cfg.get("report", {}).get("s3_root")
@@ -180,6 +203,7 @@ async def _start_workflow(
             shard_size=shard_size,
             shards_in_flight=concurrency.get("shards_in_flight", 8),
             pdfs_per_shard_in_flight=concurrency.get("pdfs_per_shard_in_flight", 8),
+            **_fleet_kwargs(batch_cfg, manage_fleet=manage_fleet),
         ),
         id=workflow_id,
         task_queue=CPU_TASK_QUEUE,
@@ -236,19 +260,45 @@ def _print_report_summary(r: BatchReport, uris: dict[str, str]) -> None:
               help="s3://... URI or local path to a manifest JSON file.")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Print the shard plan without submitting.")
-@click.option("--wait", is_flag=True, default=False,
-              help="Block until the workflow completes.")
+@click.option("--wait/--no-wait", default=True, show_default=True,
+              help="Block until the workflow completes (default).")
+@click.option("--manage-fleet/--no-manage-fleet", default=True, show_default=True,
+              help="When set, the workflow scales the ASGs up/down. Pass "
+                   "--no-manage-fleet to run against a pre-existing fleet "
+                   "(local dev / debug).")
 @click.pass_context
-def submit(ctx: click.Context, manifest_uri: str, dry_run: bool, wait: bool) -> None:
-    """Start a BatchRunWorkflow against an already-running fleet."""
-    asyncio.run(_submit(ctx.obj, manifest_uri, dry_run=dry_run, wait=wait))
+def submit(
+    ctx: click.Context, manifest_uri: str,
+    dry_run: bool, wait: bool, manage_fleet: bool,
+) -> None:
+    """Start a BatchRunWorkflow.
+
+    The workflow scales the fleet, awaits pollers, fans out shards, writes
+    reports, and tears the fleet down — all without the CLI staying
+    connected past the start call.
+    """
+    asyncio.run(_submit(
+        ctx.obj, manifest_uri,
+        dry_run=dry_run, wait=wait, manage_fleet=manage_fleet,
+    ))
 
 
-async def _submit(ctx_obj: dict, manifest_uri: str, *, dry_run: bool, wait: bool) -> None:
+async def _submit(
+    ctx_obj: dict, manifest_uri: str, *,
+    dry_run: bool, wait: bool, manage_fleet: bool,
+) -> None:
     batch_cfg = ctx_obj["batch_cfg"]
     manifest = read_manifest(manifest_uri)
     shard_size = batch_cfg.get("planner", {}).get("shard_size", DEFAULT_SHARD_SIZE)
     _print_plan(manifest, shard_size)
+    if manage_fleet:
+        console.print(
+            "[bold]Fleet management[/bold]: workflow will scale the ASGs from batch_config.yaml's "
+            "fleet block; cancellation triggers an ABANDON-detached teardown."
+        )
+    else:
+        console.print("[yellow]--no-manage-fleet[/yellow]: workflow runs against pre-existing pollers; "
+                      "operator owns the fleet.")
 
     if dry_run:
         console.print("\n[yellow]dry-run: not submitting[/yellow]")
@@ -257,93 +307,23 @@ async def _submit(ctx_obj: dict, manifest_uri: str, *, dry_run: bool, wait: bool
     client = await connect_temporal(
         ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
     )
-    handle, workflow_id = await _start_workflow(ctx_obj, client, manifest, manifest_uri)
+    handle, workflow_id = await _start_workflow(
+        ctx_obj, client, manifest, manifest_uri, manage_fleet=manage_fleet,
+    )
     console.print(f"\n[green]Started[/green] {workflow_id}  ({handle.first_execution_run_id})")
 
     if not wait:
         console.print(f"  Track: python -m prod.batch.cli status {manifest.batch_id}")
         return
 
-    console.print("Waiting for completion...")
-    _print_result(await handle.result())
-
-
-@cli.command()
-@click.option("--manifest", "manifest_uri", required=True,
-              help="s3://... URI or local path to a manifest JSON file.")
-@click.pass_context
-def run(ctx: click.Context, manifest_uri: str) -> None:
-    """Full lifecycle: scale fleet, submit, wait, build report, scale down."""
-    asyncio.run(_run(ctx.obj, manifest_uri))
-
-
-async def _run(ctx_obj: dict, manifest_uri: str) -> None:
-    batch_cfg = ctx_obj["batch_cfg"]
-    fleet = _fleet_config(batch_cfg)
-    region = fleet.get("region", "us-west-2")
-    cpu_asg = fleet["cpu_queue_asg_name"]
-    gpu_asg = fleet["gpu_queue_asg_name"]
-    timeout_s = fleet.get("worker_registration_timeout_s", 600)
-    report_root = batch_cfg.get("report", {}).get("s3_root")
-    if not report_root:
-        raise click.BadParameter("batch_config.yaml: report.s3_root must be set")
-
-    manifest = read_manifest(manifest_uri)
-    if not manifest.items:
-        raise click.BadParameter(f"manifest has no items: {manifest_uri}")
-    n = len(manifest.items)
-    cpu_workers = _size_workers(
-        n,
-        fleet.get("cpu_queue_pdfs_per_worker", 200),
-        fleet.get("cpu_queue_max_workers", 2),
-    )
-    gpu_workers = _size_workers(
-        n,
-        fleet.get("gpu_queue_pdfs_per_worker", 200),
-        fleet.get("gpu_queue_max_workers", 2),
-    )
-    shard_size = batch_cfg.get("planner", {}).get("shard_size", DEFAULT_SHARD_SIZE)
-    _print_plan(manifest, shard_size)
-    console.print(
-        f"[run] region={region}  cpu={cpu_asg}({cpu_workers})  gpu={gpu_asg}({gpu_workers})"
-    )
-
-    client = await connect_temporal(
-        ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
-    )
-
-    submit_failed = False
+    console.print("Waiting for completion (Ctrl-C cancels — finally block tears the fleet down)...")
     try:
-        await _scale_asg(region, cpu_asg, cpu_workers)
-        await _scale_asg(region, gpu_asg, gpu_workers)
-        await _await_pollers(
-            client, ctx_obj["temporal_namespace"],
-            [CPU_TASK_QUEUE, GPU_TASK_QUEUE], timeout_s, 5.0,
-        )
-
-        handle, workflow_id = await _start_workflow(ctx_obj, client, manifest, manifest_uri)
-        console.print(f"[green]Started[/green] {workflow_id}")
-        try:
-            _print_result(await handle.result())
-        except Exception as e:
-            submit_failed = True
-            console.print(f"[red]batch failed: {e}[/red]")
-
-        # Build report before scale-down so CWAgent flushes the last ~60s.
-        try:
-            await _build_report_and_write(client, manifest.batch_id, region, report_root)
-        except Exception as e:
-            console.print(f"[yellow]warn: report build failed: {e}[/yellow]")
-    finally:
-        console.print("[run] scaling fleet to zero")
-        for asg in (cpu_asg, gpu_asg):
-            try:
-                await _scale_asg(region, asg, 0)
-            except Exception as e:
-                console.print(f"[yellow]warn: scale-down {asg} failed: {e}[/yellow]")
-
-    if submit_failed:
-        sys.exit(1)
+        _print_result(await handle.result())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelling workflow...[/yellow]")
+        await handle.cancel()
+        console.print("Cancellation sent. Workflow's finally block will scale the fleet to zero.")
+        sys.exit(130)
 
 
 @cli.command()
@@ -424,21 +404,6 @@ async def _report(
     )
 
 
-@cli.command("teardown-fleet")
-@click.pass_context
-def teardown_fleet(ctx: click.Context) -> None:
-    """Force both batch ASGs to zero. Use when `run` exited without cleanup."""
-    asyncio.run(_teardown_fleet(ctx.obj))
-
-
-async def _teardown_fleet(ctx_obj: dict) -> None:
-    fleet = _fleet_config(ctx_obj["batch_cfg"])
-    region = fleet.get("region", "us-west-2")
-    for asg in (fleet["cpu_queue_asg_name"], fleet["gpu_queue_asg_name"]):
-        console.print(f"[teardown] {asg} -> 0")
-        await _scale_asg(region, asg, 0)
-
-
 @cli.command("wait-for-workers")
 @click.option("--queues", "queues_str", default="cpu,gpu", show_default=True,
               help="Comma-separated queues to wait on.")
@@ -448,7 +413,7 @@ async def _teardown_fleet(ctx_obj: dict) -> None:
 def wait_for_workers(
     ctx: click.Context, queues_str: str, timeout_s: int, poll_s: float,
 ) -> None:
-    """Block until activity pollers exist on each named queue."""
+    """Diagnostic — block until activity pollers exist on each named queue."""
     asyncio.run(_wait_for_workers(ctx.obj, queues_str, timeout_s, poll_s))
 
 

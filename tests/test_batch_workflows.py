@@ -21,7 +21,51 @@ from prod.batch.workflows.batch_run import (
     _per_item_row,
     _truncate,
 )
-from prod.batch.workflows.models import ItemResult
+from prod.batch.workflows.models import BatchRunInput, ItemResult
+
+
+# BatchRunInput fleet fields all-or-none
+
+
+def _fleet_kwargs() -> dict:
+    return dict(
+        region="us-west-2",
+        cpu_queue_asg_name="cpu-asg",
+        gpu_queue_asg_name="gpu-asg",
+        cpu_queue_desired=2,
+        gpu_queue_desired=2,
+    )
+
+
+def _input_kwargs() -> dict:
+    return dict(
+        batch_id="t",
+        manifest_uri="s3://b/m.json",
+        pipeline_config={},
+        report_root="s3://b/reports",
+    )
+
+
+def test_batch_run_input_manages_fleet_false_when_unset():
+    inp = BatchRunInput(**_input_kwargs())
+    assert inp.manages_fleet is False
+
+
+def test_batch_run_input_manages_fleet_true_when_all_set():
+    inp = BatchRunInput(**_input_kwargs(), **_fleet_kwargs())
+    assert inp.manages_fleet is True
+
+
+def test_batch_run_input_partial_fleet_rejected():
+    bad = _fleet_kwargs()
+    del bad["gpu_queue_desired"]
+    raised = None
+    try:
+        BatchRunInput(**_input_kwargs(), **bad)
+    except Exception as exc:
+        raised = exc
+    assert raised is not None, "partial fleet was accepted but should have raised"
+    assert "all-or-none" in str(raised)
 
 
 # _merge_config
@@ -182,6 +226,9 @@ _TESTS = [
     test_truncate_appends_count_when_long,
     test_truncate_at_exact_limit_is_passthrough,
     test_workflows_have_temporal_defn,
+    test_batch_run_input_manages_fleet_false_when_unset,
+    test_batch_run_input_manages_fleet_true_when_all_set,
+    test_batch_run_input_partial_fleet_rejected,
 ]
 
 
