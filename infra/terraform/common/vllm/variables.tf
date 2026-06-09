@@ -103,3 +103,15 @@ variable "ami_id" {
   type        = string
   default     = null
 }
+
+variable "gpu_metrics_interval_s" {
+  description = "Period of the nvidia-smi → CloudWatch sidecar. 30s aligns with CWAgent worker resolution."
+  type        = number
+  default     = 30
+}
+
+variable "gpu_metrics_namespace" {
+  description = "CloudWatch namespace for the GPU sidecar. Default matches `prod/reports/hardware.py::GPU_NAMESPACE`."
+  type        = string
+  default     = "OCR/vLLM/GPU"
+}

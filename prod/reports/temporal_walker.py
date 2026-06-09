@@ -1,4 +1,11 @@
-"""Walk BatchRunWorkflow + reachable children, aggregate activity/workflow stats."""
+"""Temporal-history walkers + aggregators.
+
+Two entry points, one shared aggregation pipeline:
+- walk_batch(client, batch_workflow_id) — DFS from a BatchRunWorkflow through
+  reachable children. Bounded by the workflow's reachable set.
+- walk_live_window(client, since, until) — list ProcessPdfWorkflow executions
+  closed inside [since, until], aggregate per-activity stats over them.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +41,7 @@ class _ActivityRecord:
 
 
 @dataclass
-class _WorkflowRecord:
+class WorkflowRecord:
     workflow_id: str
     workflow_type: str
     started_at: Optional[datetime] = None
@@ -44,11 +51,14 @@ class _WorkflowRecord:
     child_workflow_ids: list[str] = field(default_factory=list)
 
 
-async def walk_batch(client: Client, batch_workflow_id: str) -> list[_WorkflowRecord]:
+# --- walkers ----------------------------------------------------------------
+
+
+async def walk_batch(client: Client, batch_workflow_id: str) -> list[WorkflowRecord]:
     """DFS in discovery order (parent before children) for stable aggregation."""
     sem = asyncio.Semaphore(_HISTORY_FETCH_CONCURRENCY)
     visited: set[str] = set()
-    order: list[_WorkflowRecord] = []
+    order: list[WorkflowRecord] = []
 
     async def visit(workflow_id: str) -> None:
         if workflow_id in visited:
@@ -66,10 +76,49 @@ async def walk_batch(client: Client, batch_workflow_id: str) -> list[_WorkflowRe
     return order
 
 
-async def _fetch_workflow(client: Client, workflow_id: str) -> _WorkflowRecord:
+async def walk_live_window(
+    client: Client, since: datetime, until: datetime,
+    *, workflow_type: str = "ProcessPdfWorkflow",
+) -> list[WorkflowRecord]:
+    """List executions of `workflow_type` closed in [since, until] and fetch
+    their histories. Visibility query uses ISO-8601 timestamps."""
+    if since.tzinfo is None or until.tzinfo is None:
+        raise ValueError("walk_live_window: since/until must be timezone-aware")
+
+    # Temporal visibility: `CloseTime` filterable. Live runs never share a
+    # parent so each is a top-level execution — no child traversal needed.
+    query = (
+        f'WorkflowType = "{workflow_type}" '
+        f'AND CloseTime BETWEEN "{_iso(since)}" AND "{_iso(until)}"'
+    )
+
+    workflow_ids: list[str] = []
+    async for execution in client.list_workflows(query):
+        workflow_ids.append(execution.id)
+
+    if not workflow_ids:
+        return []
+
+    sem = asyncio.Semaphore(_HISTORY_FETCH_CONCURRENCY)
+
+    async def fetch(wid: str) -> WorkflowRecord:
+        async with sem:
+            return await _fetch_workflow(client, wid)
+
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(fetch(wid)) for wid in workflow_ids]
+
+    return [t.result() for t in tasks]
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+async def _fetch_workflow(client: Client, workflow_id: str) -> WorkflowRecord:
     handle = client.get_workflow_handle(workflow_id)
     desc = await handle.describe()
-    rec = _WorkflowRecord(
+    rec = WorkflowRecord(
         workflow_id=workflow_id,
         workflow_type=desc.workflow_type or "Unknown",
         started_at=desc.start_time,
@@ -135,8 +184,11 @@ def _terminal_outcome(et: int) -> str:
     }[et]
 
 
-def aggregate_workflows(records: list[_WorkflowRecord]) -> list[WorkflowStats]:
-    by_type: dict[str, list[_WorkflowRecord]] = defaultdict(list)
+# --- aggregators ------------------------------------------------------------
+
+
+def aggregate_workflows(records: list[WorkflowRecord]) -> list[WorkflowStats]:
+    by_type: dict[str, list[WorkflowRecord]] = defaultdict(list)
     for rec in records:
         by_type[rec.workflow_type].append(rec)
 
@@ -156,13 +208,13 @@ def aggregate_workflows(records: list[_WorkflowRecord]) -> list[WorkflowStats]:
                 success_count=success,
                 failure_count=failure,
                 other_count=len(group) - success - failure,
-                duration_seconds=_summarize(durations),
+                duration_seconds=summarize(durations),
             )
         )
     return sorted(out, key=lambda w: w.workflow_type)
 
 
-def aggregate_activities(records: list[_WorkflowRecord]) -> list[ActivityStats]:
+def aggregate_activities(records: list[WorkflowRecord]) -> list[ActivityStats]:
     by_type: dict[str, list[_ActivityRecord]] = defaultdict(list)
     for rec in records:
         for ar in rec.activities:
@@ -190,14 +242,14 @@ def aggregate_activities(records: list[_WorkflowRecord]) -> list[ActivityStats]:
                 success_count=success,
                 failure_count=failure,
                 retry_count=retries,
-                schedule_to_close_seconds=_summarize(sched_to_close),
-                start_to_close_seconds=_summarize(start_to_close),
+                schedule_to_close_seconds=summarize(sched_to_close),
+                start_to_close_seconds=summarize(start_to_close),
             )
         )
     return sorted(out, key=lambda a: a.activity_type)
 
 
-def _summarize(values: list[float]) -> Optional[StatSummary]:
+def summarize(values: list[float]) -> Optional[StatSummary]:
     if not values:
         return None
     sv = sorted(values)
@@ -221,7 +273,7 @@ def _percentile(sv: list[float], pct: float) -> float:
 
 
 def batch_window(
-    records: list[_WorkflowRecord], batch_workflow_id: str,
+    records: list[WorkflowRecord], batch_workflow_id: str,
 ) -> tuple[Optional[datetime], Optional[datetime], Optional[WorkflowExecutionStatus]]:
     """Pull the BatchRunWorkflow's started_at / closed_at / status."""
     for rec in records:

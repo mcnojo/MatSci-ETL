@@ -237,7 +237,8 @@ class BatchRunWorkflow:
                     )
                 except ActivityError as exc:
                     workflow.logger.warning(
-                        "build_report_activity failed (non-fatal — re-runnable via `cli report %s`): %s",
+                        "build_report_activity failed (non-fatal — re-runnable via "
+                        "`python -m prod.reports batch %s`): %s",
                         input.batch_id, exc,
                     )
 

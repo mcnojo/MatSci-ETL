@@ -53,7 +53,7 @@ class BatchRunInput(BaseModel):
     batch_id: str
     manifest_uri: str                # s3:// or local path read by fetch_manifest_activity
     pipeline_config: dict            # already-resolved pipeline config (URLs etc.)
-    report_root: str                 # e.g. "s3://chem-lit-artifacts/batches"
+    report_root: str                 # bucket root, e.g. "s3://chem-lit-artifacts"; writers prepend /batches/ etc.
     shard_size: int = 50
     shards_in_flight: int = 8        # bounded concurrency over ShardWorkflow children
     pdfs_per_shard_in_flight: int = 8

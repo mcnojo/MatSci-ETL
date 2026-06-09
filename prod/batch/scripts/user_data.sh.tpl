@@ -66,7 +66,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
     "aggregation_dimensions": [["InstanceId"]],
     "metrics_collected": {
       "cpu": {
-        "measurement": ["cpu_usage_idle"],
+        "measurement": ["cpu_usage_active"],
         "totalcpu": true,
         "metrics_collection_interval": 10
       },

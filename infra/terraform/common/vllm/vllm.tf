@@ -30,9 +30,12 @@ locals {
   subnet_id = coalesce(var.subnet_id, sort(data.aws_subnets.selected.ids)[0])
   role_tag  = "vllm-${var.model_key}-${var.env_tag}"
   user_data_vars = {
-    hf_model_id     = var.hf_model_id
-    vllm_port       = var.vllm_port
-    vllm_extra_args = var.vllm_extra_args
+    hf_model_id           = var.hf_model_id
+    vllm_port             = var.vllm_port
+    vllm_extra_args       = var.vllm_extra_args
+    aws_region            = var.region
+    gpu_metrics_interval  = var.gpu_metrics_interval_s
+    gpu_metrics_namespace = var.gpu_metrics_namespace
   }
 }
 

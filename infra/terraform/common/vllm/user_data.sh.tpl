@@ -48,4 +48,57 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-vllm-serve
 
+echo "[bootstrap] nvidia-smi → CloudWatch sidecar (${gpu_metrics_namespace})"
+# Polls nvidia-smi, publishes one MetricDatum per metric tagged with InstanceId.
+# IAM grant lives in vllm.tf::aws_iam_policy_document.vllm (cloudwatch:PutMetricData).
+cat > /usr/local/bin/ocr-gpu-metrics.sh <<'GPU_EOF'
+#!/bin/bash
+set -euo pipefail
+NAMESPACE="$1"; REGION="$2"
+INSTANCE_ID=$(curl -fsSL -H "X-aws-ec2-metadata-token: $(curl -fsSL -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+    http://169.254.169.254/latest/api/token)" \
+    http://169.254.169.254/latest/meta-data/instance-id)
+# Per-line: util,memused_mib,memtotal_mib. One device per row — sum across rows
+# if multi-GPU is later added; today a single row is the norm for g6.xlarge.
+while IFS=, read -r util mem_used mem_total; do
+    util=$(echo "$util" | tr -d ' %')
+    mem_used=$(echo "$mem_used" | tr -d ' MiB')
+    mem_total=$(echo "$mem_total" | tr -d ' MiB')
+    aws cloudwatch put-metric-data --region "$REGION" --namespace "$NAMESPACE" \
+        --metric-data \
+        "MetricName=gpu_utilization_percent,Unit=Percent,Value=$util,Dimensions=[{Name=InstanceId,Value=$INSTANCE_ID}]" \
+        "MetricName=gpu_memory_used_mib,Unit=Megabytes,Value=$mem_used,Dimensions=[{Name=InstanceId,Value=$INSTANCE_ID}]" \
+        "MetricName=gpu_memory_total_mib,Unit=Megabytes,Value=$mem_total,Dimensions=[{Name=InstanceId,Value=$INSTANCE_ID}]"
+done < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader)
+GPU_EOF
+chmod +x /usr/local/bin/ocr-gpu-metrics.sh
+
+cat > /etc/systemd/system/ocr-gpu-metrics.service <<UNIT_EOF
+[Unit]
+Description=Publish nvidia-smi GPU metrics to CloudWatch (${gpu_metrics_namespace})
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ocr-gpu-metrics.sh ${gpu_metrics_namespace} ${aws_region}
+UNIT_EOF
+
+cat > /etc/systemd/system/ocr-gpu-metrics.timer <<UNIT_EOF
+[Unit]
+Description=Run ocr-gpu-metrics every ${gpu_metrics_interval}s
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=${gpu_metrics_interval}s
+AccuracySec=5s
+Unit=ocr-gpu-metrics.service
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable --now ocr-gpu-metrics.timer
+
 echo "[bootstrap] complete (model still downloading — tail $VLLM_LOG)"

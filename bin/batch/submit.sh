@@ -123,5 +123,5 @@ echo "submitted."
 echo "  workflow id  : batch-$batch_id"
 echo "  temporal ui  : http://$temporal_ui_host:8233/namespaces/default/workflows/batch-$batch_id"
 if [[ -n "$report_root" ]]; then
-  echo "  report uri   : $report_root/$batch_id/report.{json,md}"
+  echo "  report uri   : $report_root/batches/$batch_id/report/report.{json,md}"
 fi

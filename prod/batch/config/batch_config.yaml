@@ -6,8 +6,10 @@ temporal:
   namespace: "default"
 
 # Per-PDF trees go under pipeline storage.s3; reports land under this root.
+# Batch reports → {root}/batches/{batch_id}/report/, live reports →
+# {root}/live/reports/{window_iso}/, comparisons → {root}/comparisons/{ts}/.
 report:
-  s3_root: "s3://chem-lit-artifacts/batches"
+  s3_root: "s3://chem-lit-artifacts"
 
 # Sharding
 planner:

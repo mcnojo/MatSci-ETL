@@ -101,6 +101,14 @@ data "aws_iam_policy_document" "batch_worker" {
     actions   = ["cloudwatch:PutMetricData"]
     resources = ["*"]
   }
+
+  # build_report_activity walks CloudWatch when it lands on a batch worker.
+  # Neither call is resource-scopable.
+  statement {
+    sid       = "CloudWatchReportReads"
+    actions   = ["cloudwatch:ListMetrics", "cloudwatch:GetMetricData"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "batch_worker" {

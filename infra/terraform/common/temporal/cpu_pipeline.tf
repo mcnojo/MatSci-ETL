@@ -179,6 +179,16 @@ data "aws_iam_policy_document" "cpu_pipeline" {
     actions   = ["cloudwatch:PutMetricData"]
     resources = ["*"]
   }
+
+  # The scheduled ocr-live-report.timer (and ad-hoc `python -m prod.reports`
+  # runs on the box) walk CloudWatch for worker + GPU stats. ListMetrics is
+  # required to enumerate per-instance dimensions; GetMetricData reads them.
+  # Neither is resource-scopable.
+  statement {
+    sid       = "CloudWatchReportReads"
+    actions   = ["cloudwatch:ListMetrics", "cloudwatch:GetMetricData"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "cpu_pipeline" {

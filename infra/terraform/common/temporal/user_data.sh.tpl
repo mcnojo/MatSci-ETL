@@ -125,6 +125,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
             "log_group_name": "${log_group_name}",
             "log_stream_name": "{instance_id}/user-data",
             "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/ocr-live-report.log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "{instance_id}/ocr-live-report",
+            "timezone": "UTC"
           }
         ]
       }
@@ -238,11 +244,53 @@ StandardError=append:$INGESTION_LOG
 WantedBy=multi-user.target
 UNIT_EOF
 
+echo "[bootstrap] systemd: ocr-live-report.{service,timer} — daily 24h rolling-window live report"
+# Cheap procedural report drop so there's always a recent live snapshot for
+# `prod.reports compare`. Runs as root in the install dir; logs to the same
+# CloudWatch log group as ocr-worker.
+LIVE_REPORT_LOG=/var/log/ocr-live-report.log
+install -m 0644 /dev/null "$LIVE_REPORT_LOG"
+
+cat > /etc/systemd/system/ocr-live-report.service <<UNIT_EOF
+[Unit]
+Description=Build a 24h rolling-window live report
+After=ocr-temporal-stack.service
+Requires=ocr-temporal-stack.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+Environment=PYTHONUNBUFFERED=1
+Environment=AWS_REGION=${aws_region}
+Environment=AWS_DEFAULT_REGION=${aws_region}
+ExecStart=$INSTALL_DIR/env/bin/python -m prod.reports \\
+    --temporal-address localhost:7233 \\
+    --temporal-namespace default \\
+    live --since 24h --region ${aws_region}
+StandardOutput=append:$LIVE_REPORT_LOG
+StandardError=append:$LIVE_REPORT_LOG
+UNIT_EOF
+
+cat > /etc/systemd/system/ocr-live-report.timer <<UNIT_EOF
+[Unit]
+Description=Run ocr-live-report once a day
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1m
+Unit=ocr-live-report.service
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
 systemctl daemon-reload
 systemctl enable --now ocr-temporal-stack
 systemctl enable --now ocr-worker
 # Enable ocr-ingestion; the ExecStartPre fails harmlessly until live/ is applied,
 # then the unit comes up automatically on the next restart tick.
 systemctl enable --now ocr-ingestion || true
+systemctl enable --now ocr-live-report.timer
 
 echo "[bootstrap] complete"

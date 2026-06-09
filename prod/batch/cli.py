@@ -10,12 +10,11 @@ Commands:
   status            Describe an in-flight or completed batch.
   cancel            Request graceful cancellation (workflow's finally
                     block tears the fleet down).
-  report            Re-run the rich report build (Temporal + CloudWatch).
-                    Use after batch completion if the embedded build_report
-                    activity didn't run (no-fleet mode) or failed.
   wait-for-workers  Diagnostic — block until activity pollers register on
                     the named task queues. Useful when debugging worker
                     bootstrap.
+
+Reports moved to `python -m prod.reports {batch,live,compare}`.
 """
 
 import asyncio
@@ -23,8 +22,6 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
 import click
 import yaml
 from rich.console import Console
@@ -45,7 +42,6 @@ from shared.temporal_client import connect_temporal
 
 from .artifacts import read_manifest
 from .planner import DEFAULT_SHARD_SIZE, batch_workflow_id, shard_manifest
-from .reports import BatchReport, build_report, write_report
 from .workflows.batch_run import BatchRunWorkflow
 from .workflows.models import BatchRunInput, BatchRunOutput
 
@@ -222,36 +218,6 @@ def _print_result(result: BatchRunOutput) -> None:
         console.print(f"  {label}: {uri}")
 
 
-async def _build_report_and_write(
-    client: Client, batch_id: str, region: str, out_dir: str,
-    *, skip_hardware: bool = False,
-) -> None:
-    console.print(f"Building report for batch [bold]{batch_id}[/bold]")
-    rpt = await build_report(
-        client=client, batch_id=batch_id, region=region,
-        pull_hardware=not skip_hardware,
-    )
-    uris = write_report(rpt, out_dir)
-    _print_report_summary(rpt, uris)
-
-
-def _print_report_summary(r: BatchReport, uris: dict[str, str]) -> None:
-    console.print(f"  status:     {r.status}")
-    console.print(
-        f"  items:      {r.items_total} "
-        f"(ok={r.items_succeeded} fail={r.items_failed})"
-    )
-    console.print(f"  workflows:  {sum(w.count for w in r.workflows)}")
-    console.print(f"  activities: {sum(a.count for a in r.activities)}")
-    console.print(f"  instances:  {len(r.hardware)}")
-    if r.flags:
-        console.print(f"\n[yellow]Flags ({len(r.flags)}):[/yellow]")
-        for f in r.flags:
-            console.print(f"  • {f}")
-    for label, uri in uris.items():
-        console.print(f"  {label}: {uri}")
-
-
 # --- commands ---------------------------------------------------------------
 
 
@@ -365,43 +331,6 @@ async def _cancel(ctx_obj: dict, batch_id: str) -> None:
     )
     await client.get_workflow_handle(batch_workflow_id(batch_id)).cancel()
     console.print(f"[yellow]Cancel requested for {batch_id}[/yellow]")
-
-
-@cli.command()
-@click.argument("batch_id")
-@click.option("--region", default=None,
-              help="AWS region for CloudWatch. Defaults to fleet.region.")
-@click.option("--skip-hardware", is_flag=True, default=False,
-              help="Skip the CloudWatch fetch (local dev).")
-@click.option("--out", "out_dir", default=None,
-              help="Override report root. Defaults to report.s3_root.")
-@click.pass_context
-def report(
-    ctx: click.Context, batch_id: str,
-    region: Optional[str], skip_hardware: bool, out_dir: Optional[str],
-) -> None:
-    """Walk a batch's Temporal histories + CW metrics into a report."""
-    asyncio.run(_report(ctx.obj, batch_id, region, skip_hardware, out_dir))
-
-
-async def _report(
-    ctx_obj: dict, batch_id: str,
-    region: Optional[str], skip_hardware: bool, out_dir: Optional[str],
-) -> None:
-    batch_cfg = ctx_obj["batch_cfg"]
-    resolved_region = region or batch_cfg.get("fleet", {}).get("region") or "us-west-2"
-    resolved_out = out_dir or batch_cfg.get("report", {}).get("s3_root")
-    if not resolved_out:
-        raise click.BadParameter("no report root — pass --out or set report.s3_root")
-    if not skip_hardware and not resolved_region:
-        raise click.BadParameter("no region — pass --region or set fleet.region")
-
-    client = await connect_temporal(
-        ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
-    )
-    await _build_report_and_write(
-        client, batch_id, resolved_region, resolved_out, skip_hardware=skip_hardware,
-    )
 
 
 @cli.command("wait-for-workers")

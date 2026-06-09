@@ -175,7 +175,7 @@ variable "incoming_prefix" {
 }
 
 variable "batch_report_root" {
-  description = "S3 URI for batch reports. Equivalent to batch_config.yaml's report.s3_root."
+  description = "S3 URI bucket root for reports — `s3://<bucket>`. Writers prepend `/batches/<id>/...`, `/live/reports/...`, or `/comparisons/...`. Matches batch_config.yaml's report.s3_root."
   type        = string
 }
 

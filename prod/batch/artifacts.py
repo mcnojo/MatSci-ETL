@@ -1,6 +1,6 @@
-"""S3 artifact IO for the batch path: manifest read, report write.
+"""Batch-specific artifact IO: manifest read + flat per-item/failures/summary writer.
 
-Path layout:
+Path layout (report_root is the bucket root; each motif's writer prepends its own prefix):
     s3://<bucket>/batches/<batch_id>/manifest.json
     s3://<bucket>/batches/<batch_id>/report/{summary.json,per_item.csv,failures.jsonl,report.json,report.md}
 """
@@ -8,39 +8,19 @@ Path layout:
 import csv
 import io
 import json
-from pathlib import Path
-from urllib.parse import urlparse
 
-import boto3
+from shared.s3_io import get_bytes, put_bytes
 
 from .models import BatchManifest
 
 
-def _split_s3_uri(uri: str) -> tuple[str, str]:
-    parsed = urlparse(uri)
-    if parsed.scheme != "s3":
-        raise ValueError(f"expected s3:// URI, got {uri}")
-    bucket = parsed.netloc
-    key = parsed.path.lstrip("/")
-    if not bucket or not key:
-        raise ValueError(f"malformed s3 URI: {uri}")
-    return bucket, key
-
-
 def read_manifest(manifest_uri: str) -> BatchManifest:
     """Read+validate a manifest from `s3://...` or a local path."""
-    if manifest_uri.startswith("s3://"):
-        bucket, key = _split_s3_uri(manifest_uri)
-        s3 = boto3.client("s3")
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        raw = obj["Body"].read().decode("utf-8")
-    else:
-        raw = Path(manifest_uri).read_text(encoding="utf-8")
-    return BatchManifest.model_validate_json(raw)
+    return BatchManifest.model_validate_json(get_bytes(manifest_uri).decode("utf-8"))
 
 
 def report_prefix(report_root: str, batch_id: str) -> str:
-    return f"{report_root.rstrip('/')}/{batch_id}/report"
+    return f"{report_root.rstrip('/')}/batches/{batch_id}/report"
 
 
 def write_report_files(
@@ -67,25 +47,12 @@ def write_report_files(
         writer.writerows(per_item)
     per_item_body = per_item_buf.getvalue().encode("utf-8")
 
-    put_artifact_bytes(summary_uri, summary_body, "application/json")
-    put_artifact_bytes(per_item_uri, per_item_body, "text/csv")
-    put_artifact_bytes(failures_uri, failures_body, "application/x-ndjson")
+    put_bytes(summary_uri, summary_body, "application/json")
+    put_bytes(per_item_uri, per_item_body, "text/csv")
+    put_bytes(failures_uri, failures_body, "application/x-ndjson")
 
     return {
         "summary_uri": summary_uri,
         "per_item_uri": per_item_uri,
         "failures_uri": failures_uri,
     }
-
-
-def put_artifact_bytes(uri: str, body: bytes, content_type: str) -> None:
-    """Write to `s3://...` or a local path. Local is for single-host testing."""
-    if uri.startswith("s3://"):
-        bucket, key = _split_s3_uri(uri)
-        boto3.client("s3").put_object(
-            Bucket=bucket, Key=key, Body=body, ContentType=content_type,
-        )
-        return
-    path = Path(uri)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
