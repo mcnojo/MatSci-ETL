@@ -81,4 +81,4 @@ Active: ~$0.04–0.09/hr per Spot instance (c7i.large–xlarge), both ASGs.
 
 ## Out of scope
 
-`cpu-pipeline-01` (managed by `prod/live/scripts/setup_cpu.sh`); vLLM endpoint (Phase 6); bucket policy on `chem-lit-artifacts` (out of band).
+`cpu-pipeline-01` (managed by `infra/terraform/common/temporal`); vLLM endpoint (managed by `infra/terraform/common/vllm`); bucket policy on `chem-lit-artifacts` (out of band).

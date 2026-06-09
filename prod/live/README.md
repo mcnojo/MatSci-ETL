@@ -4,18 +4,18 @@ Long-running service that processes PDFs as they land in S3. Optimizes for
 per-PDF latency.
 
 ```
-S3 raw-pdfs -> SQS -> ingestion consumer -> Temporal ProcessPdfWorkflow
-                                              ├─ CPU activities (cpu-task-queue)
-                                              └─ GPU activities (gpu-task-queue)
-                                          -> S3 artifacts
+S3 live/incoming -> SQS -> ingestion consumer -> Temporal ProcessPdfWorkflow
+                                                  ├─ CPU activities (cpu-task-queue)
+                                                  └─ GPU activities (gpu-task-queue)
+                                              -> S3 artifacts
 ```
 
-Two EC2 hosts:
+Two EC2 hosts (terraform-managed via `infra/terraform/common/`):
 
 | Host            | Type       | Role                                               |
 | --------------- | ---------- | -------------------------------------------------- |
 | cpu-pipeline-01 | m7i.xlarge | Temporal + Postgres (Docker), worker, SQS consumer |
-| gpu-model-01    | g6.2xlarge | vLLM model server (chandra + text LLM)             |
+| vLLM box        | g6.xlarge  | vLLM model server (chandra)                        |
 
 For the bulk-job/batch path see `prod/batch/`.
 
@@ -34,39 +34,21 @@ python -m etl.cli --pdf etl/hybrid.pdf
 # 4. Temporal UI at http://localhost:8233
 ```
 
-## Prod setup (one-time)
+## Prod setup
 
 ```bash
-# On cpu-pipeline-01:
-./prod/live/scripts/setup_cpu.sh
+bin/live/up.sh             # terraform: common/temporal + common/vllm + live
+bin/live/submit.sh <pdf>…  # uploads to live/incoming/, S3 fires SQS → consumer
+bin/live/down.sh
 ```
 
-This installs Docker, starts Temporal + Postgres via docker-compose and
-creates a systemd unit for the worker.
+`bin/live/up.sh` brings up everything: cpu-pipeline-01 (which runs the worker
++ ingestion systemd units), the vLLM box, and the SQS queue + S3 notification.
 
-## SQS ingestion
+## SQS queue URL handoff
 
-```bash
-# On cpu-pipeline-01:
-python -m prod.live.ingestion.consumer
-```
-
-## Scripts
-
-```bash
-./prod/live/scripts/spin_up.sh         # start instances, wait for Temporal health
-./prod/live/scripts/spin_down.sh       # stop instances (preserves EBS)
-./prod/live/scripts/teardown.sh        # terminate instances + delete EBS volumes
-./prod/live/scripts/lockdown_sg.sh     # tighten GPU security group
-```
-
-## Spin-down vs teardown
-
-**Spin-down** — stop instances, preserve EBS volumes (~$10/mo for 100GB gp3).
-Use this for daily start/stop cycles.
-
-**Teardown** — terminate instances, destroy EBS volumes. Use this when you're
-done for an extended period. Reprovision from scratch with `launch.sh` +
-`setup_cpu.sh`.
-
-Postgres data is Temporal-only (transient) — nothing is lost on teardown.
+The SQS queue URL is published as SSM parameter `/ocr-bench/live/queue_url`
+by `infra/terraform/live`. The `ocr-ingestion` systemd unit fetches it at
+startup (`ExecStartPre`) and injects it as `OCR_LIVE_QUEUE_URL`. The
+consumer honors this env var over the value in `prod_config.yaml`, so the
+config file stays clean.

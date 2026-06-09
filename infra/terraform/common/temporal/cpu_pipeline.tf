@@ -33,6 +33,7 @@ locals {
     aws_region          = var.region
     artifact_bucket     = var.artifact_bucket
     tree_llm_ssm_prefix = var.tree_llm_ssm_prefix
+    live_ssm_prefix     = var.live_ssm_prefix
     log_group_name      = aws_cloudwatch_log_group.cpu_pipeline.name
     max_concurrent_cpu  = var.max_concurrent_cpu
     max_concurrent_gpu  = var.max_concurrent_gpu

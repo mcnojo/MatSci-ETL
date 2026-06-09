@@ -1,6 +1,6 @@
 #!/bin/bash
 # vLLM box bootstrap. Rendered by terraform's templatefile(); runs once at first boot.
-# Mirrors vllm/aws/setup_remote.sh but wires up a proper systemd unit instead of nohup.
+# Installs vLLM as a systemd unit pinned to ${hf_model_id}.
 
 set -euo pipefail
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1

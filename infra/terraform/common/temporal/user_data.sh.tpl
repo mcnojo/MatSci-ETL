@@ -191,6 +191,24 @@ StandardError=append:$WORKER_LOG
 WantedBy=multi-user.target
 UNIT_EOF
 
+echo "[bootstrap] ocr-ingestion-env-fetch helper"
+# Helper that ExecStartPre runs to pull the live SQS queue URL out of SSM.
+# Returns non-zero when live/ hasn't been applied yet, so systemd retries
+# every RestartSec until the parameter appears.
+cat > /usr/local/bin/ocr-ingestion-env-fetch.sh <<'FETCH_EOF'
+#!/bin/bash
+set -euo pipefail
+region="$1"; param="$2"; out="$3"
+val=$(aws ssm get-parameter \
+    --region "$region" \
+    --name "$param" \
+    --query Parameter.Value --output text 2>/dev/null)
+[[ -n "$val" && "$val" != "None" ]] || { echo "ssm param $param empty/missing — has live/ been applied?" >&2; exit 1; }
+install -m 0600 -D /dev/null "$out"
+echo "OCR_LIVE_QUEUE_URL=$val" > "$out"
+FETCH_EOF
+chmod +x /usr/local/bin/ocr-ingestion-env-fetch.sh
+
 echo "[bootstrap] systemd: ocr-ingestion"
 cat > /etc/systemd/system/ocr-ingestion.service <<UNIT_EOF
 [Unit]
@@ -202,12 +220,14 @@ Requires=ocr-temporal-stack.service
 Type=simple
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$SECRETS_FILE
+EnvironmentFile=$SECRETS_DIR/live.env
 Environment=PYTHONUNBUFFERED=1
 Environment=AWS_REGION=${aws_region}
 Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
 Environment=OCR_VLLM_ENV_TAG=prod
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
+ExecStartPre=/usr/local/bin/ocr-ingestion-env-fetch.sh ${aws_region} ${live_ssm_prefix}/queue_url $SECRETS_DIR/live.env
 ExecStart=$INSTALL_DIR/env/bin/python -m prod.live.ingestion.consumer
 Restart=always
 RestartSec=10
@@ -221,7 +241,8 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-temporal-stack
 systemctl enable --now ocr-worker
-# Ingestion stays disabled until operator populates the SQS URL in prod_config.yaml.
-systemctl enable ocr-ingestion
+# Enable ocr-ingestion; the ExecStartPre fails harmlessly until live/ is applied,
+# then the unit comes up automatically on the next restart tick.
+systemctl enable --now ocr-ingestion || true
 
 echo "[bootstrap] complete"

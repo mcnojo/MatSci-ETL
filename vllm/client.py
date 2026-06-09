@@ -9,7 +9,6 @@ from openai import OpenAI
 
 VLLM_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = VLLM_DIR / "results"
-INSTANCES_DIR = VLLM_DIR / "aws" / "instances"
 
 from shared.prompts.chandra import (
     CHANDRA_OCR_LAYOUT_PROMPT,
@@ -78,11 +77,9 @@ MODELS = {
 def _resolve_host(model_key: str, explicit: str | None) -> str:
     if explicit:
         return explicit
-    ip_file = INSTANCES_DIR / f"{model_key}.ip"
-    if ip_file.exists():
-        return ip_file.read_text().strip()
-    print(f"No --host and no tracked instance for '{model_key}'.", file=sys.stderr)
-    print(f"  Launch one: ./vllm/aws/launch.sh {model_key}", file=sys.stderr)
+    print(f"--host required for '{model_key}'.", file=sys.stderr)
+    print("  Bring up a dev vLLM box: bin/dev/up_vllm.sh", file=sys.stderr)
+    print("  Then pass its public IP via --host.", file=sys.stderr)
     sys.exit(1)
 
 

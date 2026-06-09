@@ -12,6 +12,7 @@ Flow:
 
 import asyncio
 import logging
+import os
 import re
 import sys
 import uuid
@@ -143,9 +144,11 @@ def main():
         prod_cfg = yaml.safe_load(f)
 
     ingestion_cfg = prod_cfg.get("ingestion", {})
-    queue_url = ingestion_cfg.get("queue_url")
+    # Env var wins — the systemd unit on cpu-pipeline-01 injects this from the SSM
+    # parameter published by infra/terraform/live, so prod_config.yaml stays clean.
+    queue_url = os.environ.get("OCR_LIVE_QUEUE_URL") or ingestion_cfg.get("queue_url")
     if not queue_url:
-        log.error("ingestion.queue_url not set in %s", CONFIG_PATH)
+        log.error("queue_url unset — provide OCR_LIVE_QUEUE_URL or ingestion.queue_url in %s", CONFIG_PATH)
         sys.exit(1)
 
     poll_interval_s = ingestion_cfg.get("poll_interval_s", 5)

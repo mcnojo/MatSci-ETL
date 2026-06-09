@@ -1,73 +1,63 @@
 # vLLM OCR Serving
 
-Serve DeepSeek-OCR-2, dots.mocr, and olmOCR on EC2 via vLLM.
+Serve chandra-ocr, DeepSeek-OCR-2, dots.mocr, and olmOCR on EC2 via vLLM.
 
-## Setup
+## Operator-side launch
 
-- AWS CLI configured
-- EC2 key pair (default: `ocr-bench`, edit `aws/config.sh`)
-- Key at `~/.ssh/ocr-bench.pem`
-
-## Usage
+The vLLM box itself is terraform-managed. For the production / prod-tagged
+box that workers reach via EC2 tag lookup, use:
 
 ```bash
-# launch a model
-./vllm/aws/launch.sh deepseek
-
-# send an image
-python vllm/client.py data/pages/LiFePO4_zhao2017/10/page_10.png --model deepseek
-
-# tear down
-./vllm/aws/terminate.sh deepseek
+bin/batch/up.sh           # or bin/live/up.sh — both bring up env_tag=prod
 ```
 
-## AWS scripts (`vllm/aws/`)
-
-| Script | Does |
-|--------|------|
-| `config.sh` | Region, instance type, AMI, key pair |
-| `launch.sh <model>` | Spin up g6.xlarge, install vLLM, start serving |
-| `terminate.sh <model>` | Kill the instance |
-| `terminate.sh all` | Kill all tracked instances |
-| `status.sh` | Show instance states |
-
-First `launch.sh` creates a security group (`ocr-bench-vllm`) opening ports 22 and 8001-8003. Instance IPs save to `aws/instances/` for auto-detection.
-
-## Models
-
-| Model | Size | Port | Launch |
-|-------|------|------|--------|
-| DeepSeek-OCR-2 | 3B | 8001 | `./vllm/aws/launch.sh deepseek` |
-| dots.mocr | 3B | 8002 | `./vllm/aws/launch.sh dots` |
-| olmOCR-2-7B (FP8) | 8B | 8003 | `./vllm/aws/launch.sh olmocr` |
-
-Weights download on first launch (~5-10 min).
-
-## Client
+For the hybrid local-dev escape hatch (Mac drives `etl/cli.py` against a
+dev-tagged AWS vLLM, no Temporal):
 
 ```bash
-# auto-resolves host from tracked instances
-python vllm/client.py image.png --model deepseek
+bin/dev/up_vllm.sh
+bin/dev/down_vllm.sh
+```
 
-# all models
-python vllm/client.py image.png --all
+See `bin/README.md` for the operator manual.
+
+## Client (benchmark utility)
+
+`vllm/client.py` is a standalone benchmark probe — useful for sanity-checking
+a running vLLM endpoint without going through the pipeline. Pass `--host` as
+the public IP of the vLLM box (look it up via terraform output or EC2 tags;
+the pipeline itself resolves via `shared/vllm_resolve.py`).
+
+```bash
+# all models for an image
+python vllm/client.py image.png --all --host <vllm-public-ip>
+
+# single model
+python vllm/client.py image.png --model chandra --host <vllm-public-ip>
 
 # custom prompt
-python vllm/client.py image.png --model dots --prompt "Extract tables as markdown"
-
-# manual host
-python vllm/client.py image.png --model deepseek --host 3.85.12.100
+python vllm/client.py image.png --model dots --host <vllm-public-ip> \
+    --prompt "Extract tables as markdown"
 ```
 
 Results save to `vllm/results/`.
 
-## Instance sizing
+## Box-side serve scripts
 
-- **g6.xlarge** (1x L4 24GB) fits any single model — default
-- One model per instance for benchmarking isolation
+`vllm/serve_*.sh` are standalone wrappers around `vllm serve` for manually
+benchmarking a single model on a vLLM box (e.g. via SSM `start-session`).
+They are not invoked by terraform — `common/vllm`'s user-data wires its own
+systemd unit pinned to `${hf_model_id}`.
 
-## Logs
+| Script                | Model                  | Port |
+| --------------------- | ---------------------- | ---- |
+| `serve_deepseek_ocr.sh` | DeepSeek-OCR-2 (3B)   | 8001 |
+| `serve_dots_mocr.sh`    | dots.mocr (3B)        | 8002 |
+| `serve_olmocr.sh`       | olmOCR-2-7B (FP8)     | 8003 |
+
+## Logs (terraform-managed box)
 
 ```bash
-ssh -i ~/.ssh/ocr-bench.pem ubuntu@<IP> 'tail -f ~/vllm_serve.log'
+aws ssm start-session --target <vllm-instance-id>
+tail -f /var/log/vllm_serve.log
 ```

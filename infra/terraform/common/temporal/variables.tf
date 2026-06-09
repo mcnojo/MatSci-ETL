@@ -76,6 +76,12 @@ variable "tree_llm_ssm_prefix" {
   default     = "/ocr-bench/tree_llm"
 }
 
+variable "live_ssm_prefix" {
+  description = "SSM parameter prefix the live motif uses to hand the SQS queue URL off to cpu-pipeline-01. Authoritative — live/ reads this via remote_state."
+  type        = string
+  default     = "/ocr-bench/live"
+}
+
 variable "max_concurrent_cpu" {
   description = "Per-process cap on cpu-task-queue activities for the local worker."
   type        = number

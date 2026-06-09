@@ -94,7 +94,7 @@ async def _run() -> int:
         except FileNotFoundError as exc:
             return _skip(
                 f"pipeline config resolution failed ({exc}). The vLLM endpoint "
-                f"isn't available; start it with `vllm/aws/launch.sh chandra` "
+                f"isn't available; bring up a dev box with `bin/dev/up_vllm.sh` "
                 f"or run the live path (`make worker` + `python -m etl.cli`) "
                 f"once first to verify your local setup."
             )

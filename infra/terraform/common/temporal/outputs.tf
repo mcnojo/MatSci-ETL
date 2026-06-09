@@ -23,6 +23,11 @@ output "cpu_pipeline_role_arn" {
   value       = aws_iam_role.cpu_pipeline.arn
 }
 
+output "cpu_pipeline_role_name" {
+  description = "cpu-pipeline-01 instance-profile role name. live/ uses this for cross-module IAM attachment."
+  value       = aws_iam_role.cpu_pipeline.name
+}
+
 output "vpc_id" {
   description = "VPC the substrate lives in. Consumed by live/ and batch/ modules."
   value       = data.aws_vpc.selected.id
@@ -41,6 +46,11 @@ output "artifact_bucket" {
 output "tree_llm_ssm_prefix" {
   description = "SSM prefix under which tree_llm API keys live. Workers fetch on boot."
   value       = var.tree_llm_ssm_prefix
+}
+
+output "live_ssm_prefix" {
+  description = "SSM prefix the live motif publishes the queue URL under. live/ reads this for its SSM param + IAM grant."
+  value       = var.live_ssm_prefix
 }
 
 output "log_group_name" {
