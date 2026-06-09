@@ -47,3 +47,40 @@ output "log_group_name" {
   description = "CloudWatch log group for worker logs."
   value       = aws_cloudwatch_log_group.batch_worker.name
 }
+
+# --- Phase D: batch_trigger Lambda outputs ---------------------------------
+
+output "batch_trigger_lambda_arn" {
+  description = "Batch trigger Lambda ARN. Reference from monitoring / alerting."
+  value       = aws_lambda_function.batch_trigger.arn
+}
+
+output "batch_trigger_lambda_name" {
+  description = "Batch trigger Lambda function name."
+  value       = aws_lambda_function.batch_trigger.function_name
+}
+
+output "batch_trigger_security_group_id" {
+  description = "Lambda SG. The cross-SG ingress rule on cpu-pipeline-01:7233 is owned by this module."
+  value       = aws_security_group.batch_trigger_lambda.id
+}
+
+output "batch_trigger_dlq_url" {
+  description = "DLQ for failed Lambda invocations (14-day retention)."
+  value       = aws_sqs_queue.batch_trigger_dlq.url
+}
+
+output "batch_trigger_dlq_arn" {
+  description = "DLQ ARN."
+  value       = aws_sqs_queue.batch_trigger_dlq.arn
+}
+
+output "batch_trigger_log_group_name" {
+  description = "CloudWatch log group for the batch trigger Lambda."
+  value       = aws_cloudwatch_log_group.batch_trigger_lambda.name
+}
+
+output "lambda_bundle_dir" {
+  description = "Path the operator must populate via infra/lambdas/batch_trigger/build.sh before plan/apply."
+  value       = local.lambda_bundle_dir
+}

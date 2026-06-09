@@ -131,3 +131,74 @@ variable "lifecycle_hook_heartbeat_s" {
   type        = number
   default     = 120
 }
+
+# --- Phase D: batch_trigger Lambda ------------------------------------------
+
+variable "lambda_runtime" {
+  description = "Lambda runtime. Must match the python_version used to pip-install the bundle (build.sh's LAMBDA_PYTHON)."
+  type        = string
+  default     = "python3.12"
+}
+
+variable "lambda_architecture" {
+  description = "Lambda architecture. Must match the bundle's pip --platform (build.sh's LAMBDA_ARCH)."
+  type        = string
+  default     = "arm64"
+
+  validation {
+    condition     = contains(["arm64", "x86_64"], var.lambda_architecture)
+    error_message = "Must be arm64 or x86_64."
+  }
+}
+
+variable "lambda_memory_mb" {
+  description = "Lambda memory ceiling. Scales CPU proportionally."
+  type        = number
+  default     = 256
+}
+
+variable "lambda_timeout_s" {
+  description = "Lambda execution timeout. Has to cover ENI attach (first call, ~10-30s) + Temporal connect + workflow start."
+  type        = number
+  default     = 30
+}
+
+variable "incoming_prefix" {
+  description = "S3 prefix the trigger listens on. PUT of {prefix}{batch_id}/manifest.json fires the Lambda."
+  type        = string
+  default     = "batches/incoming/"
+
+  validation {
+    condition     = endswith(var.incoming_prefix, "/")
+    error_message = "incoming_prefix must end with a slash."
+  }
+}
+
+variable "batch_report_root" {
+  description = "S3 URI for batch reports. Equivalent to batch_config.yaml's report.s3_root."
+  type        = string
+}
+
+variable "shard_size" {
+  description = "BatchRunInput.shard_size — items per ShardWorkflow."
+  type        = number
+  default     = 50
+}
+
+variable "shards_in_flight" {
+  description = "BatchRunInput.shards_in_flight — bounded concurrency over ShardWorkflow children."
+  type        = number
+  default     = 8
+}
+
+variable "pdfs_per_shard_in_flight" {
+  description = "BatchRunInput.pdfs_per_shard_in_flight — bounded concurrency per shard."
+  type        = number
+  default     = 8
+}
+
+variable "worker_registration_timeout_s" {
+  description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity."
+  type        = number
+  default     = 600
+}

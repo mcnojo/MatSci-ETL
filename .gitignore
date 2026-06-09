@@ -239,7 +239,8 @@ docs/
 test_hard/
 
 # Terraform — provider plugins, state, env-specific tfvars.
-# .terraform.lock.hcl stays tracked so provider versions are reproducible.
+# .terraform.lock.hcl is tracked by default so provider versions are reproducible;
+# batch/ is excluded (see entry below).
 **/.terraform/
 *.tfstate
 *.tfstate.*
@@ -255,3 +256,4 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+infra/terraform/batch/.terraform.lock.hcl

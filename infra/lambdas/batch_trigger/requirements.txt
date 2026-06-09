@@ -1,0 +1,4 @@
+# Lambda runtime (python3.12) bundles boto3 — don't bundle.
+temporalio>=1.7,<2
+pydantic>=2.6,<3
+PyYAML>=6.0,<7
