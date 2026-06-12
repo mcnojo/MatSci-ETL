@@ -4,7 +4,9 @@ Reports moved to `python -m prod.reports {batch,live,compare}`.
 """
 
 import asyncio
+import json
 import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,6 +37,9 @@ console = Console()
 
 _QUEUE_NAMES = {"cpu": CPU_TASK_QUEUE, "gpu": GPU_TASK_QUEUE}
 
+# Resolved relative to this file so the CLI works regardless of CWD.
+_DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
+
 
 @click.group()
 @click.option("--config", "config_path",
@@ -43,6 +48,10 @@ _QUEUE_NAMES = {"cpu": CPU_TASK_QUEUE, "gpu": GPU_TASK_QUEUE}
               default="etl/config/pipeline_config.yaml", show_default=True)
 @click.option("--temporal-address", default="localhost:7233", show_default=True)
 @click.option("--temporal-namespace", default="default", show_default=True)
+@click.option("--terraform-dir", "terraform_dir",
+              default=_DEFAULT_BATCH_TF_DIR, show_default=True,
+              help="prod/batch terraform module dir; outputs are the source of truth "
+                   "for ASG names + scale-up targets. Only consulted when managing the fleet.")
 @click.option("-v", "--verbose", is_flag=True, default=False)
 @click.pass_context
 def cli(
@@ -51,6 +60,7 @@ def cli(
     pipeline_config_path: str,
     temporal_address: str,
     temporal_namespace: str,
+    terraform_dir: str,
     verbose: bool,
 ) -> None:
     """Batch operations CLI."""
@@ -67,6 +77,7 @@ def cli(
     ctx.obj["pipeline_config_path"] = pipeline_config_path
     ctx.obj["temporal_address"] = temporal_address
     ctx.obj["temporal_namespace"] = temporal_namespace
+    ctx.obj["terraform_dir"] = terraform_dir
 
 
 def _load_yaml(path: str | None) -> dict:
@@ -75,26 +86,69 @@ def _load_yaml(path: str | None) -> dict:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
 
-def _fleet_kwargs(batch_cfg: dict, *, manage_fleet: bool) -> dict:
+# Fleet wiring is sourced from prod/batch terraform outputs — terraform owns
+# the ASG names, scale-up target (max_size), and worker registration timeout.
+# Same authoritative values the Lambda gets via terraform-templated env vars.
+_REQUIRED_FLEET_OUTPUTS = (
+    "region", "cpu_queue_asg_name", "gpu_queue_asg_name",
+    "cpu_queue_max_size", "gpu_queue_max_size",
+    "worker_registration_timeout_s",
+)
+
+
+def _terraform_outputs(module_dir: str) -> dict:
+    """Run `terraform output -json` on a module and return name→value.
+
+    Raises ClickException with operator-actionable guidance for the three
+    realistic failure modes: terraform missing, module not initialized, motif
+    not up (outputs empty).
+    """
+    try:
+        result = subprocess.run(
+            ["terraform", f"-chdir={module_dir}", "output", "-json"],
+            check=False, capture_output=True, text=True,
+        )
+    except FileNotFoundError as e:
+        raise click.ClickException(
+            f"`terraform` not found on PATH. The CLI reads fleet config from "
+            f"terraform outputs at {module_dir}. Install terraform or pass "
+            f"--no-manage-fleet to run against a pre-existing fleet."
+        ) from e
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"`terraform output` failed in {module_dir} (exit {result.returncode}):\n"
+            f"{(result.stderr or result.stdout).strip()}\n"
+            f"Is the batch motif up? (bin/batch/up.sh)"
+        )
+    raw_json = result.stdout.strip() or "{}"
+    raw = json.loads(raw_json)
+    if not raw:
+        raise click.ClickException(
+            f"`terraform output` returned no outputs from {module_dir}. The "
+            f"batch motif is down. Bring it up (bin/batch/up.sh) or pass "
+            f"--no-manage-fleet to run against a pre-existing fleet."
+        )
+    return {k: v["value"] for k, v in raw.items()}
+
+
+def _fleet_kwargs(*, manage_fleet: bool, terraform_dir: str) -> dict:
     # manage_fleet=False → empty dict; workflow skips lifecycle (debug path).
     if not manage_fleet:
         return {}
-    fleet = batch_cfg.get("fleet") or {}
-    required = ("region", "cpu_queue_asg_name", "gpu_queue_asg_name",
-                "cpu_queue_max_workers", "gpu_queue_max_workers")
-    missing = [k for k in required if not fleet.get(k)]
+    outputs = _terraform_outputs(terraform_dir)
+    missing = [k for k in _REQUIRED_FLEET_OUTPUTS if k not in outputs]
     if missing:
-        raise click.BadParameter(
-            f"batch_config.yaml: fleet block is missing required keys: {missing}. "
-            f"Pass --no-manage-fleet to run against a pre-existing fleet."
+        raise click.ClickException(
+            f"prod/batch terraform outputs are missing required keys: {missing}. "
+            f"Re-apply the batch module (bin/tf.sh batch apply) and retry."
         )
     return {
-        "region": fleet["region"],
-        "cpu_queue_asg_name": fleet["cpu_queue_asg_name"],
-        "gpu_queue_asg_name": fleet["gpu_queue_asg_name"],
-        "cpu_queue_desired": fleet["cpu_queue_max_workers"],
-        "gpu_queue_desired": fleet["gpu_queue_max_workers"],
-        "worker_registration_timeout_s": fleet.get("worker_registration_timeout_s", 600),
+        "region": outputs["region"],
+        "cpu_queue_asg_name": outputs["cpu_queue_asg_name"],
+        "gpu_queue_asg_name": outputs["gpu_queue_asg_name"],
+        "cpu_queue_desired": outputs["cpu_queue_max_size"],
+        "gpu_queue_desired": outputs["gpu_queue_max_size"],
+        "worker_registration_timeout_s": outputs["worker_registration_timeout_s"],
     }
 
 
@@ -175,7 +229,10 @@ async def _start_workflow(
             shard_size=shard_size,
             shards_in_flight=concurrency.get("shards_in_flight", 8),
             pdfs_per_shard_in_flight=concurrency.get("pdfs_per_shard_in_flight", 8),
-            **_fleet_kwargs(batch_cfg, manage_fleet=manage_fleet),
+            **_fleet_kwargs(
+                manage_fleet=manage_fleet,
+                terraform_dir=ctx_obj["terraform_dir"],
+            ),
         ),
         id=workflow_id,
         task_queue=CPU_TASK_QUEUE,
@@ -227,8 +284,9 @@ async def _submit(
     _print_plan(manifest, shard_size)
     if manage_fleet:
         console.print(
-            "[bold]Fleet management[/bold]: workflow will scale the ASGs from batch_config.yaml's "
-            "fleet block; cancellation triggers an ABANDON-detached teardown."
+            "[bold]Fleet management[/bold]: workflow will scale the ASGs to their "
+            "max_size (read from prod/batch terraform outputs); cancellation "
+            "triggers an ABANDON-detached teardown."
         )
     else:
         console.print("[yellow]--no-manage-fleet[/yellow]: workflow runs against pre-existing pollers; "

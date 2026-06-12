@@ -95,7 +95,7 @@ locals {
 
 resource "aws_security_group" "vllm" {
   name        = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}-sg"
-  description = "vLLM serving SG for ${local.role_tag}. Egress all; ingress on vllm_port from operator_cidrs + worker SGs."
+  description = "vLLM serving SG for ${local.role_tag}. Egress all; operator + worker ingress attached as standalone rules below."
   vpc_id      = data.aws_vpc.selected.id
 
   egress {
@@ -107,32 +107,44 @@ resource "aws_security_group" "vllm" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  ingress {
-    description = "vision vLLM port from operator CIDR(s)"
-    from_port   = var.vllm_port
-    to_port     = var.vllm_port
-    protocol    = "tcp"
-    cidr_blocks = var.operator_cidrs
-  }
+  # No inline ingress — matches shared/temporal. Standalone rules below are
+  # gated on `length(operator_cidrs) > 0` so the fail-closed default is real:
+  # empty operator_cidrs → no operator rules → SSM Session Manager is the only
+  # access path. External modules attaching their own ingress to this SG won't
+  # be clobbered by re-applies.
+}
 
-  ingress {
-    description = "tree_llm vLLM port from operator CIDR(s)"
-    from_port   = var.tree_llm_port
-    to_port     = var.tree_llm_port
-    protocol    = "tcp"
-    cidr_blocks = var.operator_cidrs
-  }
+resource "aws_security_group_rule" "vision_from_operator" {
+  count             = length(var.operator_cidrs) > 0 ? 1 : 0
+  description       = "vision vLLM port from operator CIDR(s)"
+  type              = "ingress"
+  from_port         = var.vllm_port
+  to_port           = var.vllm_port
+  protocol          = "tcp"
+  cidr_blocks       = var.operator_cidrs
+  security_group_id = aws_security_group.vllm.id
+}
 
-  dynamic "ingress" {
-    for_each = var.allow_ssh_from_operator ? [1] : []
-    content {
-      description = "SSH from operator CIDR(s)"
-      from_port   = 22
-      to_port     = 22
-      protocol    = "tcp"
-      cidr_blocks = var.operator_cidrs
-    }
-  }
+resource "aws_security_group_rule" "tree_llm_from_operator" {
+  count             = length(var.operator_cidrs) > 0 ? 1 : 0
+  description       = "tree_llm vLLM port from operator CIDR(s)"
+  type              = "ingress"
+  from_port         = var.tree_llm_port
+  to_port           = var.tree_llm_port
+  protocol          = "tcp"
+  cidr_blocks       = var.operator_cidrs
+  security_group_id = aws_security_group.vllm.id
+}
+
+resource "aws_security_group_rule" "ssh_from_operator" {
+  count             = (var.allow_ssh_from_operator && length(var.operator_cidrs) > 0) ? 1 : 0
+  description       = "SSH from operator CIDR(s)"
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks       = var.operator_cidrs
+  security_group_id = aws_security_group.vllm.id
 }
 
 # Per-worker-SG ingress on each vLLM port. Scoped at this scope so destroying

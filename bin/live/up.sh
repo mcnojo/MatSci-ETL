@@ -44,6 +44,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Default the operator CIDR to this host's public IP if not given. Without
+# this the shared/temporal SG ingress rules (gated on length > 0) silently
+# don't create — instance comes up, Temporal listens, but the operator's Mac
+# can't reach :7233/:8088/:22. Hard-fail if detection doesn't respond in 5s
+# so we never apply with an empty list by accident.
+if [[ ${#operator_cidrs[@]} -eq 0 ]]; then
+  detected=$(curl -fsS --max-time 5 https://checkip.amazonaws.com | tr -d '[:space:]') || detected=""
+  if [[ -z "$detected" ]]; then
+    echo "error: --operator-cidr not given and checkip.amazonaws.com did not respond." >&2
+    echo "       pass --operator-cidr <your_cidr>/32 explicitly and re-run." >&2
+    exit 1
+  fi
+  operator_cidrs=("$detected/32")
+  echo "auto-detected operator cidr: ${operator_cidrs[0]} (override with --operator-cidr)"
+fi
+
 temporal_args=()
 vllm_args=()
 if [[ ${#operator_cidrs[@]} -gt 0 ]]; then

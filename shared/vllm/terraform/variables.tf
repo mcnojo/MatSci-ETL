@@ -143,9 +143,9 @@ variable "availability_zone" {
 }
 
 variable "operator_cidrs" {
-  description = "CIDRs allowed to reach the vLLM port. Default: world-open for hybrid dev (operator's Mac). Tighten to the operator's IP CIDR for prod."
+  description = "CIDRs allowed to reach the vLLM ports. Empty = no operator ingress (fail-closed); in-VPC workers still reach vLLM via worker_security_group_ids. bin/<motif>/up.sh and bin/dev/up_vllm.sh auto-detect the operator's public IP via checkip.amazonaws.com when this is not supplied — direct `terraform apply` callers must pass it explicitly."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
 }
 
 variable "worker_security_group_ids" {

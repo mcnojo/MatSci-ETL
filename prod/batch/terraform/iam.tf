@@ -117,6 +117,33 @@ resource "aws_iam_role_policy_attachment" "batch_worker" {
   policy_arn = aws_iam_policy.batch_worker.arn
 }
 
+# Cross-module IAM grant: scale_fleet_up/down activities run on cpu-pipeline-01
+# (whose role is owned by shared/temporal) and call SetDesiredCapacity on the
+# batch ASGs (owned by this module). The policy is created here and attached
+# to the shared/temporal role so tearing batch down detaches the grant cleanly
+# without touching the role itself — same precedent as prod/live/terraform/iam.tf.
+data "aws_iam_policy_document" "batch_scaling" {
+  statement {
+    sid     = "SetDesiredCapacityOnBatchAsgs"
+    actions = ["autoscaling:SetDesiredCapacity"]
+    resources = [
+      aws_autoscaling_group.cpu_queue.arn,
+      aws_autoscaling_group.gpu_queue.arn,
+    ]
+  }
+}
+
+resource "aws_iam_policy" "batch_scaling" {
+  name        = "${var.name_prefix}-scaling-from-cpu-pipeline"
+  description = "Grants cpu-pipeline-01 SetDesiredCapacity on the two batch ASGs (scale_fleet activities)."
+  policy      = data.aws_iam_policy_document.batch_scaling.json
+}
+
+resource "aws_iam_role_policy_attachment" "batch_scaling" {
+  role       = local.cpu_pipeline_role_name
+  policy_arn = aws_iam_policy.batch_scaling.arn
+}
+
 # Role assumed by ASG to publish lifecycle events to SQS.
 data "aws_iam_policy_document" "asg_assume" {
   statement {

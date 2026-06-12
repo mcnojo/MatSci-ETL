@@ -67,6 +67,7 @@ locals {
   # Substrate values read from shared/temporal's remote state.
   artifact_bucket                = data.terraform_remote_state.shared_temporal.outputs.artifact_bucket
   cpu_pipeline_security_group_id = data.terraform_remote_state.shared_temporal.outputs.cpu_pipeline_security_group_id
+  cpu_pipeline_role_name         = data.terraform_remote_state.shared_temporal.outputs.cpu_pipeline_role_name
   temporal_address               = "${data.terraform_remote_state.shared_temporal.outputs.cpu_pipeline_private_ip}:7233"
   bucket_arn                     = "arn:${data.aws_partition.current.partition}:s3:::${local.artifact_bucket}"
   batch_report_root              = "s3://${local.artifact_bucket}"

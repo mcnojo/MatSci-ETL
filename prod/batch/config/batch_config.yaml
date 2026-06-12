@@ -21,16 +21,9 @@ concurrency:
   shards_in_flight: 8               # ShardWorkflow children in parallel
   pdfs_per_shard_in_flight: 8       # ProcessPdfWorkflow children per shard
 
-# Fleet — consumed by `cli submit` which plumbs these values into BatchRunInput.
-# Phase C: the workflow owns the lifecycle (scale up, await pollers, scale down)
-# inside the try/finally — no operator babysitting required. Workflow scales
-# each ASG straight to *max_workers* (option 2: skip per-batch sizing math).
-# Both ASGs are CPU instances; gpu-task-queue workers are HTTP proxies to vLLM.
-fleet:
-  region: "us-west-2"
-  cpu_queue_asg_name: "ocr-batch-cpu-queue"
-  gpu_queue_asg_name: "ocr-batch-gpu-queue"
-  cpu_queue_max_workers: 2          # must match terraform cpu_queue_max_size
-  gpu_queue_max_workers: 2          # must match terraform gpu_queue_max_size
-  worker_registration_timeout_s: 600
-  vllm_role_tag: "vllm-batch"       # shared/vllm/resolve.py picks endpoints by role
+# Fleet wiring (region, ASG names, scale-up target = max_size, worker
+# registration timeout) is read from prod/batch terraform outputs at submit
+# time — terraform is the single source of truth. Same values the Lambda
+# trigger gets via terraform-templated env vars in lambda.tf. Pass
+# --no-manage-fleet to cli submit to skip the lookup and run against an
+# externally-managed fleet.

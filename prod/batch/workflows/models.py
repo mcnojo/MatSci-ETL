@@ -60,9 +60,10 @@ class BatchRunInput(BaseModel):
 
     # Fleet lifecycle. Populated together (all-or-none); when omitted, the
     # workflow assumes the caller is managing the fleet out-of-band (local
-    # dev, `cli submit` against a pre-running fleet) and skips scale-up,
-    # poller wait, and scale-down. Values flow from batch_config.yaml's
-    # `fleet` block through the CLI/Lambda into the workflow input.
+    # dev, `cli submit --no-manage-fleet`) and skips scale-up, poller wait,
+    # and scale-down. Values are sourced from prod/batch terraform outputs:
+    # the CLI reads them via `terraform output` at submit time, the Lambda
+    # gets them via terraform-templated env vars (prod/batch/terraform/lambda.tf).
     region: Optional[str] = None
     cpu_queue_asg_name: Optional[str] = None
     gpu_queue_asg_name: Optional[str] = None

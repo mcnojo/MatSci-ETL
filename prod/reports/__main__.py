@@ -51,13 +51,16 @@ def _load_batch_cfg(path: str) -> dict:
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--batch-config", default="prod/batch/config/batch_config.yaml",
               show_default=True,
-              help="Used to resolve --region (fleet.region) and the default report root.")
+              help="Used to resolve the default report root.")
+@click.option("--region", "region_default", default="us-west-2", show_default=True,
+              help="Default AWS region for CloudWatch lookups; per-command --region overrides.")
 @click.pass_context
 def cli(
     ctx: click.Context,
     temporal_address: str,
     temporal_namespace: str,
     batch_config: str,
+    region_default: str,
 ) -> None:
     """Build batch / live / comparison reports."""
     ctx.ensure_object(dict)
@@ -66,13 +69,13 @@ def cli(
     ctx.obj["batch_config"] = batch_config
     batch_cfg = _load_batch_cfg(batch_config) if Path(batch_config).exists() else {}
     ctx.obj["report_root_default"] = batch_cfg.get("report", {}).get("s3_root")
-    ctx.obj["region_default"] = batch_cfg.get("fleet", {}).get("region", "us-west-2")
+    ctx.obj["region_default"] = region_default
 
 
 @cli.command()
 @click.argument("batch_id")
 @click.option("--region", default=None,
-              help="AWS region for CloudWatch. Defaults to batch_config fleet.region.")
+              help="AWS region for CloudWatch. Defaults to the group --region (us-west-2).")
 @click.option("--out", "out_dir", default=None,
               help="Override report root. Defaults to batch_config report.s3_root.")
 @click.option("--skip-hardware", is_flag=True, default=False,

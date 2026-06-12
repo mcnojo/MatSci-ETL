@@ -9,8 +9,7 @@
 # Flags:
 #   --zone <az>           AZ shortcut (e.g. us-west-2a) to dodge capacity stalls.
 #   --operator-cidr <c>   CIDR allowed inbound on vLLM ports. Repeatable.
-#                         Default leaves shared/vllm's operator_cidrs default
-#                         (world-open for hybrid local-dev).
+#                         If omitted, auto-detected via checkip.amazonaws.com.
 #   -- <args...>          Raw terraform passthrough.
 
 set -euo pipefail
@@ -42,11 +41,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-vllm_args=()
-if [[ ${#operator_cidrs[@]} -gt 0 ]]; then
-  quoted=$(printf '"%s",' "${operator_cidrs[@]}"); quoted="[${quoted%,}]"
-  vllm_args+=("-var" "operator_cidrs=$quoted")
+# Default the operator CIDR to this host's public IP if not given. Hard-fail
+# if detection doesn't respond — never apply with an empty list, which would
+# (correctly, post-fix) leave the box unreachable from the Mac.
+if [[ ${#operator_cidrs[@]} -eq 0 ]]; then
+  detected=$(curl -fsS --max-time 5 https://checkip.amazonaws.com | tr -d '[:space:]') || detected=""
+  if [[ -z "$detected" ]]; then
+    echo "error: --operator-cidr not given and checkip.amazonaws.com did not respond." >&2
+    echo "       pass --operator-cidr <your_cidr>/32 explicitly and re-run." >&2
+    exit 1
+  fi
+  operator_cidrs=("$detected/32")
+  echo "auto-detected operator cidr: ${operator_cidrs[0]} (override with --operator-cidr)"
 fi
+
+vllm_args=()
+quoted=$(printf '"%s",' "${operator_cidrs[@]}"); quoted="[${quoted%,}]"
+vllm_args+=("-var" "operator_cidrs=$quoted")
 if [[ -n "$zone" ]]; then
   vllm_args+=("-var" "availability_zone=$zone")
 fi

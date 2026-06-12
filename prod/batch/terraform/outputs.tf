@@ -4,12 +4,12 @@ output "region" {
 }
 
 output "cpu_queue_asg_name" {
-  description = "cpu-task-queue ASG name. Wire into batch_config.yaml fleet.cpu_queue_asg_name."
+  description = "cpu-task-queue ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
   value       = aws_autoscaling_group.cpu_queue.name
 }
 
 output "gpu_queue_asg_name" {
-  description = "gpu-task-queue ASG name. Wire into batch_config.yaml fleet.gpu_queue_asg_name."
+  description = "gpu-task-queue ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
   value       = aws_autoscaling_group.gpu_queue.name
 }
 
@@ -21,6 +21,25 @@ output "cpu_queue_asg_arn" {
 output "gpu_queue_asg_arn" {
   description = "gpu-task-queue ASG ARN."
   value       = aws_autoscaling_group.gpu_queue.arn
+}
+
+# Fleet bounds. Both the Lambda (via terraform-templated env vars in lambda.tf)
+# and the CLI (via `terraform output` in prod/batch/cli.py) source the
+# scale-up target from these. Reading off the ASG resource itself so the
+# value matches what AWS will actually accept on SetDesiredCapacity.
+output "cpu_queue_max_size" {
+  description = "cpu-task-queue ASG max_size. scale_fleet_up_activity passes this as cpu_queue_desired."
+  value       = aws_autoscaling_group.cpu_queue.max_size
+}
+
+output "gpu_queue_max_size" {
+  description = "gpu-task-queue ASG max_size. scale_fleet_up_activity passes this as gpu_queue_desired."
+  value       = aws_autoscaling_group.gpu_queue.max_size
+}
+
+output "worker_registration_timeout_s" {
+  description = "Per-batch worker registration timeout. Both CLI and Lambda plumb this into BatchRunInput.worker_registration_timeout_s."
+  value       = var.worker_registration_timeout_s
 }
 
 output "worker_role_arn" {

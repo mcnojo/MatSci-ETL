@@ -62,10 +62,11 @@ Group-level flags (apply to all subcommands):
 - `--temporal-address` (default `localhost:7233`)
 - `--temporal-namespace` (default `default`)
 - `--batch-config <path>` (default `prod/batch/config/batch_config.yaml`) —
-  source of `--region` and `--out` defaults
+  source of the `--out` default (report root)
+- `--region <aws-region>` (default `us-west-2`) — default for per-command `--region`
 
 Per-command flags:
-- `--region` — AWS region for CloudWatch. Defaults to `fleet.region`.
+- `--region` — AWS region for CloudWatch. Defaults to the group `--region`.
 - `--out` — override the bucket root. Defaults to `report.s3_root`.
 - `--skip-hardware` — skip the CloudWatch fetch (local dev / fast iteration).
 
