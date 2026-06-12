@@ -40,7 +40,6 @@ from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import (
     ActivityError,
     ApplicationError,
-    ChildWorkflowError,
 )
 
 with workflow.unsafe.imports_passed_through():
@@ -321,13 +320,18 @@ class BatchRunWorkflow:
                         id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
                     )
                     shard_results[shard_idx] = out
-                except ChildWorkflowError as exc:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
                     # Shard-level failure is rare (shards swallow per-PDF
-                    # failures). Surface as per-item failures so the report
-                    # is still complete.
+                    # failures). Mark every item in the shard as failed so the
+                    # report stays complete — the per-PDF state at the moment
+                    # the shard died is undefined; a rerun re-attempts them all.
                     workflow.logger.error(
-                        "ShardWorkflow %s failed: %s", child_id, exc,
+                        "ShardWorkflow %s failed: %s: %s",
+                        child_id, type(exc).__name__, exc,
                     )
+                    err = _truncate(f"shard-level failure: {type(exc).__name__}: {exc}", 1500)
                     shard_results[shard_idx] = ShardOutput(
                         shard_index=shard_idx,
                         items=[
@@ -336,7 +340,7 @@ class BatchRunWorkflow:
                                 pdf_uri=item.pdf_uri,
                                 status="failure",
                                 workflow_id=child_id,
-                                error=f"shard-level failure: {_truncate(str(exc), 1500)}",
+                                error=err,
                             )
                             for item in shards[shard_idx]
                         ],

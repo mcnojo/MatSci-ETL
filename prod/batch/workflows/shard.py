@@ -14,11 +14,9 @@ the operator needs the full report including failures.
 """
 
 import asyncio
-import uuid
 
 from temporalio import workflow
 from temporalio.common import WorkflowIDReusePolicy
-from temporalio.exceptions import ChildWorkflowError
 
 with workflow.unsafe.imports_passed_through():
     from prod.batch.planner import per_pdf_workflow_id
@@ -53,7 +51,7 @@ class ShardWorkflow:
                         ProcessPdfWorkflow.run,
                         ProcessPdfWorkflowInput(
                             document_id=item.document_id,
-                            run_id=str(uuid.uuid4()),
+                            run_id=str(workflow.uuid4()),
                             pdf_path=item.pdf_uri,
                             config=input.pipeline_config,
                         ),
@@ -75,17 +73,22 @@ class ShardWorkflow:
                         total_pages=out.total_pages,
                         metrics_summary=out.metrics_summary,
                     )
-                except ChildWorkflowError as exc:
+                except asyncio.CancelledError:
+                    # TaskGroup cancellation must propagate. Anything else
+                    # (real child failure, sandbox violation, bad input) gets
+                    # recorded so the shard finishes and the report shows it.
+                    raise
+                except Exception as exc:
                     workflow.logger.warning(
-                        "ProcessPdfWorkflow failed for %s: %s",
-                        item.document_id, exc,
+                        "child workflow failed for %s: %s: %s",
+                        item.document_id, type(exc).__name__, exc,
                     )
                     results[local_idx] = ItemResult(
                         document_id=item.document_id,
                         pdf_uri=item.pdf_uri,
                         status="failure",
                         workflow_id=child_id,
-                        error=_truncate(str(exc), 2000),
+                        error=_truncate(f"{type(exc).__name__}: {exc}", 2000),
                     )
 
         async with asyncio.TaskGroup() as tg:
