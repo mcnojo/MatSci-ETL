@@ -14,7 +14,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from prod.reports import build_batch_report, write_batch_report
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 
 class BuildReportInput(BaseModel):

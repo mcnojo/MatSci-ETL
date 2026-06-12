@@ -19,6 +19,8 @@ import time
 
 from openai import AsyncOpenAI
 
+from shared.vllm.resolve import resolve_vllm_url
+
 log = logging.getLogger("llm_calls")
 
 _provider: str = "ollama"
@@ -44,7 +46,10 @@ def _init_clients(config: dict) -> None:
     _model_name = cfg["model"]
 
     explicit_provider = (cfg.get("provider") or "").lower() or None
-    base_url = cfg.get("base_url") or "http://localhost:11434/v1"
+    # Resolve here (idempotent for non-vllm-instance URLs) so workers route to
+    # the co-hosted tree_llm vLLM unit via the EC2 tag lookup, mirroring the
+    # vision activity's resolve at activity boundary.
+    base_url = resolve_vllm_url(cfg.get("base_url") or "http://localhost:11434/v1")
 
     if explicit_provider:
         _provider = explicit_provider

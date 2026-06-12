@@ -26,7 +26,7 @@ See `bin/README.md` for the operator manual.
 `vllm/client.py` is a standalone benchmark probe — useful for sanity-checking
 a running vLLM endpoint without going through the pipeline. Pass `--host` as
 the public IP of the vLLM box (look it up via terraform output or EC2 tags;
-the pipeline itself resolves via `shared/vllm_resolve.py`).
+the pipeline itself resolves via `shared/vllm/resolve.py`).
 
 ```bash
 # all models for an image
@@ -46,8 +46,8 @@ Results save to `vllm/results/`.
 
 `vllm/serve_*.sh` are standalone wrappers around `vllm serve` for manually
 benchmarking a single model on a vLLM box (e.g. via SSM `start-session`).
-They are not invoked by terraform — `common/vllm`'s user-data wires its own
-systemd unit pinned to `${hf_model_id}`.
+They are not invoked by terraform — `shared/vllm`'s user-data wires two
+systemd units (vision + tree_llm) pinned to their respective `hf_model_id`s.
 
 | Script                | Model                  | Port |
 | --------------------- | ---------------------- | ---- |

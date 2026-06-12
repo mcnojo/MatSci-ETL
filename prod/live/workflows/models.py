@@ -1,9 +1,5 @@
-"""Input/output models for ProcessPdfWorkflow (live).
-
-Per-call activity I/O models (LlmTextCallInput/Output, ChandraCallInput/Output)
-live in prod/shared_infra/activity_models.py because they are used by both the
-live ProcessPdfWorkflow and the batch path's per-PDF fan-out.
-"""
+"""Input/output models for ProcessPdfWorkflow (live). Per-call activity I/O
+models live in shared/temporal/activity_models.py — shared with batch."""
 
 from pydantic import BaseModel, ConfigDict
 

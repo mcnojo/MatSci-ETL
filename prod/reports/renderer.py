@@ -1,9 +1,4 @@
-"""Markdown rendering for batch, live, and comparison reports.
-
-The comparison renderer is the headline output: every metric category is
-emitted as a two-column "Live | Batch" table with delta + ratio so the
-efficiency difference reads at a glance.
-"""
+"""Markdown rendering for batch, live, and comparison reports."""
 
 from __future__ import annotations
 
@@ -19,9 +14,6 @@ from .models import (
     WorkerInstanceStats,
     WorkflowStats,
 )
-
-# --- batch ------------------------------------------------------------------
-
 
 def render_batch_markdown(report: BatchReport) -> str:
     lines: list[str] = []
@@ -46,9 +38,6 @@ def render_batch_markdown(report: BatchReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --- live -------------------------------------------------------------------
-
-
 def render_live_markdown(report: LiveReport) -> str:
     lines: list[str] = []
     lines.append(f"# Live report: {report.window.since.isoformat()} → {report.window.until.isoformat()}")
@@ -68,9 +57,6 @@ def render_live_markdown(report: LiveReport) -> str:
     _append_hardware(lines, report.hardware)
     _append_gpu(lines, report.gpu)
     return "\n".join(lines) + "\n"
-
-
-# --- comparison -------------------------------------------------------------
 
 
 def render_comparison_markdown(report: ComparisonReport) -> str:
@@ -140,9 +126,6 @@ def render_comparison_markdown(report: ComparisonReport) -> str:
     _append_compare_table(lines, "Metric", gpu_rows)
 
     return "\n".join(lines) + "\n"
-
-
-# --- shared section appenders -----------------------------------------------
 
 
 def _append_section_header(lines: list[str], title: str) -> None:
@@ -235,9 +218,6 @@ def _append_gpu(lines: list[str], gpu: list[GpuStats]) -> None:
         lines.append("")
 
 
-# --- comparison helpers -----------------------------------------------------
-
-
 def _append_compare_table(
     lines: list[str], label: str, rows: list[tuple[str, float, float]],
 ) -> None:
@@ -323,9 +303,6 @@ def _per_hour(count: int, duration_s: float) -> float:
 
 def _rate(num: int, denom: int) -> float:
     return (num / denom) if denom else 0.0
-
-
-# --- formatting -------------------------------------------------------------
 
 
 def _cw_period_line(period: int) -> str:

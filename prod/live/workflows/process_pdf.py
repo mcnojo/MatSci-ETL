@@ -41,11 +41,11 @@ with workflow.unsafe.imports_passed_through():
         build_opt_from_config,
         build_tree,
     )
-    from prod.shared_infra.activity_models import (
+    from shared.temporal.activity_models import (
         ChandraCallInput,
         LlmTextCallInput,
     )
-    from prod.shared_infra.task_queues import (
+    from shared.temporal.task_queues import (
         CPU_ACTIVITY_TIMEOUT,
         CPU_HEARTBEAT_TIMEOUT,
         CPU_TASK_QUEUE,

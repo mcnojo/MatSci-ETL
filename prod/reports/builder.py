@@ -1,10 +1,4 @@
-"""Build + write report shapes. Markdown rendering lives in `renderer.py`.
-
-Three entry points:
-- build_batch_report(client, batch_id, region) — bounded by BatchRunWorkflow.
-- build_live_report(client, window, region) — rolling window of standalone runs.
-- build_comparison_report(batch_report, live_report) — combine two prebuilt reports.
-"""
+"""Build + write report shapes. Markdown rendering lives in `renderer.py`."""
 
 from __future__ import annotations
 
@@ -44,9 +38,6 @@ from .temporal_walker import (
     walk_batch,
     walk_live_window,
 )
-
-
-# --- batch ------------------------------------------------------------------
 
 
 async def build_batch_report(
@@ -98,9 +89,6 @@ def write_batch_report(report: BatchReport, report_root: str) -> dict[str, str]:
     return _write_pair(base, report.model_dump_json(indent=2), render_batch_markdown(report))
 
 
-# --- live -------------------------------------------------------------------
-
-
 async def build_live_report(
     *,
     client: Client,
@@ -140,9 +128,6 @@ def write_live_report(report: LiveReport, report_root: str) -> dict[str, str]:
     return _write_pair(base, report.model_dump_json(indent=2), render_live_markdown(report))
 
 
-# --- comparison -------------------------------------------------------------
-
-
 def build_comparison_report(batch: BatchReport, live: LiveReport) -> ComparisonReport:
     """Pure combinator over two prebuilt reports — no IO."""
     return ComparisonReport(
@@ -157,9 +142,6 @@ def write_comparison_report(report: ComparisonReport, report_root: str) -> dict[
     slug = report.generated_at.strftime("%Y%m%dT%H%M%SZ")
     base = f"{report_root.rstrip('/')}/comparisons/{slug}"
     return _write_pair(base, report.model_dump_json(indent=2), render_comparison_markdown(report))
-
-
-# --- shared helpers ---------------------------------------------------------
 
 
 async def _pull_hardware_and_gpu(
@@ -179,8 +161,7 @@ async def _pull_hardware_and_gpu(
 
 
 def _items_from_pdf_workflows(workflows: list[WorkflowStats]) -> tuple[int, int, int]:
-    # ProcessPdfWorkflow may be absent if a batch failed before fan-out, or
-    # if a live window had no traffic.
+    # Absent if a batch failed pre-fan-out or a live window had no traffic.
     for w in workflows:
         if w.workflow_type == "ProcessPdfWorkflow":
             return w.count, w.success_count, w.failure_count + w.other_count

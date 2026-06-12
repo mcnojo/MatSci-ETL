@@ -3,7 +3,7 @@
 # state and locking. Run once per AWS account. Safe to re-run — every operation
 # is idempotent.
 #
-# Names + region must match infra/terraform/_backend.hcl. Change here AND there
+# Names + region must match shared/terraform/_backend.hcl. Change here AND there
 # if `ocr-benchmarking-tfstate` is taken globally.
 
 set -euo pipefail

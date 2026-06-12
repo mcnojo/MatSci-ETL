@@ -27,7 +27,7 @@ with workflow.unsafe.imports_passed_through():
         ProcessPdfWorkflowOutput,
     )
     from prod.live.workflows.process_pdf import ProcessPdfWorkflow
-    from prod.shared_infra.task_queues import (
+    from shared.temporal.task_queues import (
         CPU_TASK_QUEUE,
         WORKFLOW_EXECUTION_TIMEOUT,
     )

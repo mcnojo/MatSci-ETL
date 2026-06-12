@@ -1,42 +1,106 @@
 #!/usr/bin/env bash
 # Bring the live motif online.
 #
-#   common/temporal apply  →  cpu-pipeline-01 (Temporal, worker, ocr-ingestion unit)
-#   common/vllm     apply  →  vLLM box (env_tag=prod)
+#   shared/temporal apply  →  cpu-pipeline-01 (Temporal, worker, ocr-ingestion unit)
+#   shared/vllm     apply  →  vLLM box (env_tag=prod)
 #   live            apply  →  SQS queue + S3 notification + SSM queue-URL handoff
 #   wait_health            →  poll Temporal :7233 + vLLM /health
 #
-# Idempotent. Extra terraform args after `--`.
+# Idempotent.
+#
+# Flags:
+#   --zone <az>           AZ shortcut for the vLLM box (e.g. us-west-2a),
+#                         used to dodge g6e capacity stalls.
+#   --operator-cidr <c>   CIDR allowed inbound on Temporal UI/gRPC + vLLM
+#                         ports (e.g. 24.19.235.189/32). Repeatable.
+#   -- <args...>          Raw terraform passthrough applied to every apply step.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TF="$REPO_ROOT/bin/tf.sh"
 
+zone=""
+operator_cidrs=()
 extra_args=()
-if [[ $# -gt 0 ]]; then
-  if [[ "$1" == "--" ]]; then
-    shift
-    extra_args=("$@")
-  else
-    echo "usage: $0 [-- <extra terraform args>]" >&2
-    exit 1
-  fi
+
+usage() {
+  echo "usage: $0 [--zone <az>] [--operator-cidr <cidr>]... [-- <terraform args>]" >&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --zone)
+      [[ $# -ge 2 ]] || usage
+      zone="$2"; shift 2 ;;
+    --operator-cidr)
+      [[ $# -ge 2 ]] || usage
+      operator_cidrs+=("$2"); shift 2 ;;
+    --)
+      shift; extra_args=("$@"); break ;;
+    *)
+      usage ;;
+  esac
+done
+
+temporal_args=()
+vllm_args=()
+if [[ ${#operator_cidrs[@]} -gt 0 ]]; then
+  quoted=$(printf '"%s",' "${operator_cidrs[@]}"); quoted="[${quoted%,}]"
+  temporal_args+=("-var" "operator_cidrs=$quoted")
+  vllm_args+=("-var" "operator_cidrs=$quoted")
+fi
+if [[ -n "$zone" ]]; then
+  vllm_args+=("-var" "availability_zone=$zone")
 fi
 
 step() { printf "\n=== %s ===\n" "$*"; }
 
-step "common/temporal init + apply"
-"$TF" common/temporal init -input=false -upgrade
-"$TF" common/temporal apply -auto-approve -input=false "${extra_args[@]}"
+# shared/platform: long-lived SSM key slots. Apply is a no-op after first run
+# (lifecycle.ignore_changes preserves the operator-populated value; data
+# sources downstream just read by name). Cheap to run every up; fails fast
+# if the operator hasn't populated the keys yet.
+step "shared/platform init + apply (key slots — survives down.sh)"
+"$TF" shared/platform init -input=false -upgrade
+"$TF" shared/platform apply -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
-step "common/vllm init + apply (env_tag=prod)"
-"$TF" common/vllm init -input=false -upgrade
-"$TF" common/vllm apply -auto-approve -input=false -var "env_tag=prod" "${extra_args[@]}"
+step "shared/temporal init + apply"
+"$TF" shared/temporal init -input=false -upgrade
+"$TF" shared/temporal apply -auto-approve -input=false \
+    ${temporal_args[@]+"${temporal_args[@]}"} \
+    ${extra_args[@]+"${extra_args[@]}"}
+
+step "shared/vllm init + apply (env_tag=prod)"
+"$TF" shared/vllm init -input=false -upgrade
+"$TF" shared/vllm apply -auto-approve -input=false -var "env_tag=prod" \
+    ${vllm_args[@]+"${vllm_args[@]}"} \
+    ${extra_args[@]+"${extra_args[@]}"}
 
 step "live init + apply"
 "$TF" live init -input=false -upgrade
-"$TF" live apply -auto-approve -input=false "${extra_args[@]}"
+"$TF" live apply -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
+
+step "log tail commands"
+_region="${AWS_DEFAULT_REGION:-${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}}"
+_temporal_instance=$("$TF" shared/temporal output -raw cpu_pipeline_instance_id 2>/dev/null || true)
+_temporal_log_group=$("$TF" shared/temporal output -raw log_group_name 2>/dev/null || true)
+_vllm_instance=$("$TF" shared/vllm output -raw instance_id 2>/dev/null || true)
+_region_flag=${_region:+" --region $_region"}
+
+if [[ -n "$_temporal_instance" && -n "$_temporal_log_group" ]]; then
+  echo "cpu-pipeline (CloudWatch — streams appear once CWAgent starts):"
+  for stream in user-data ocr-worker ocr-ingestion; do
+    echo "  aws logs tail $_temporal_log_group --log-stream-name-prefix $_temporal_instance/$stream --follow$_region_flag"
+  done
+fi
+if [[ -n "$_vllm_instance" ]]; then
+  echo "vLLM (SSM — /var/log on the instance):"
+  for log in vllm_vision vllm_tree_llm; do
+    echo "  aws ssm start-session --target $_vllm_instance$_region_flag --document-name AWS-StartInteractiveCommand --parameters 'command=[\"tail -f /var/log/$log.log\"]'"
+  done
+fi
+echo
 
 step "wait_health"
 "$REPO_ROOT/bin/wait_health.sh"

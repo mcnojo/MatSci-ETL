@@ -1,8 +1,8 @@
 """BatchRunWorkflow — top-level parent for a batch run.
 
-Phase C: the workflow owns the entire batch lifecycle. A single workflow
-start (from `cli submit`, from the Phase D Lambda, or from anywhere) is
-sufficient — no CLI babysitting.
+The workflow owns the entire batch lifecycle. A single workflow start (from
+`cli submit`, from the trigger Lambda, or anywhere else) is sufficient — no
+CLI babysitting.
 
 Flow (when input.manages_fleet):
   1. fetch_manifest_activity reads the manifest from S3 (or local) and
@@ -67,7 +67,7 @@ with workflow.unsafe.imports_passed_through():
         WriteReportInput,
         write_report_activity,
     )
-    from prod.shared_infra.task_queues import (
+    from shared.temporal.task_queues import (
         CPU_ACTIVITY_TIMEOUT,
         CPU_HEARTBEAT_TIMEOUT,
         CPU_TASK_QUEUE,

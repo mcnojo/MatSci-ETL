@@ -37,7 +37,7 @@ tree_llm:
 # Vision server (OCR model, any OpenAI-compatible endpoint)
 # Works with vLLM, Ollama, MLX, or any server exposing /v1/chat/completions
 vision_server:
-  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm_resolve.py (EC2 tag role=vllm-chandra-<env>)
+  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-chandra-<env>)
   api_key: "EMPTY"                              # vLLM default
   ocr_model: "datalab-to/chandra-ocr-2"
 

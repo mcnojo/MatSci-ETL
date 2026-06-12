@@ -62,12 +62,12 @@ async def _run() -> int:
     # Imports deferred so test discovery doesn't fail if temporalio is absent
     from prod.batch.workflows.batch_run import BatchRunWorkflow
     from prod.batch.workflows.models import BatchRunInput, BatchRunOutput
-    from prod.shared_infra.task_queues import (
+    from shared.temporal.task_queues import (
         BATCH_WORKFLOW_EXECUTION_TIMEOUT,
         CPU_TASK_QUEUE,
     )
     from shared.config_loader import load_pipeline_config
-    from shared.temporal_client import connect_temporal
+    from shared.temporal.client import connect_temporal
 
     client = await connect_temporal(f"{TEMPORAL_HOST}:{TEMPORAL_PORT}")
 

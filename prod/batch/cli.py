@@ -1,18 +1,4 @@
-"""Operator CLI for the batch path.
-
-Phase C: the workflow owns the batch lifecycle (scale up, await pollers,
-fan out, write report, scale down). The CLI is now a thin entry point —
-`submit` is the primary command, kept for power users / debug runs (the
-Phase D Lambda is the production trigger).
-
-Commands:
-  submit            Start a BatchRunWorkflow. Default waits for completion.
-  status            Describe an in-flight or completed batch.
-  cancel            Request graceful cancellation (workflow's finally
-                    block tears the fleet down).
-  wait-for-workers  Diagnostic — block until activity pollers register on
-                    the named task queues. Useful when debugging worker
-                    bootstrap.
+"""Operator CLI for the batch path. The workflow owns the lifecycle; this is a thin entry point.
 
 Reports moved to `python -m prod.reports {batch,live,compare}`.
 """
@@ -32,13 +18,13 @@ from temporalio.api.workflowservice.v1 import DescribeTaskQueueRequest
 from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.common import WorkflowIDReusePolicy
 
-from prod.shared_infra.task_queues import (
+from shared.temporal.task_queues import (
     BATCH_WORKFLOW_EXECUTION_TIMEOUT,
     CPU_TASK_QUEUE,
     GPU_TASK_QUEUE,
 )
 from shared.config_loader import load_pipeline_config
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 from .artifacts import read_manifest
 from .planner import DEFAULT_SHARD_SIZE, batch_workflow_id, shard_manifest
@@ -48,9 +34,6 @@ from .workflows.models import BatchRunInput, BatchRunOutput
 console = Console()
 
 _QUEUE_NAMES = {"cpu": CPU_TASK_QUEUE, "gpu": GPU_TASK_QUEUE}
-
-
-# --- group ------------------------------------------------------------------
 
 
 @click.group()
@@ -86,9 +69,6 @@ def cli(
     ctx.obj["temporal_namespace"] = temporal_namespace
 
 
-# --- helpers ----------------------------------------------------------------
-
-
 def _load_yaml(path: str | None) -> dict:
     if not path:
         return {}
@@ -96,11 +76,7 @@ def _load_yaml(path: str | None) -> dict:
 
 
 def _fleet_kwargs(batch_cfg: dict, *, manage_fleet: bool) -> dict:
-    """Pull the fleet block out of batch_config.yaml into BatchRunInput kwargs.
-
-    `manage_fleet=False` returns an empty dict (workflow skips lifecycle) —
-    used by the debug `submit --no-manage-fleet` path.
-    """
+    # manage_fleet=False → empty dict; workflow skips lifecycle (debug path).
     if not manage_fleet:
         return {}
     fleet = batch_cfg.get("fleet") or {}
@@ -218,9 +194,6 @@ def _print_result(result: BatchRunOutput) -> None:
         console.print(f"  {label}: {uri}")
 
 
-# --- commands ---------------------------------------------------------------
-
-
 @cli.command()
 @click.option("--manifest", "manifest_uri", required=True,
               help="s3://... URI or local path to a manifest JSON file.")
@@ -237,12 +210,7 @@ def submit(
     ctx: click.Context, manifest_uri: str,
     dry_run: bool, wait: bool, manage_fleet: bool,
 ) -> None:
-    """Start a BatchRunWorkflow.
-
-    The workflow scales the fleet, awaits pollers, fans out shards, writes
-    reports, and tears the fleet down — all without the CLI staying
-    connected past the start call.
-    """
+    """Start a BatchRunWorkflow (workflow owns scale-up → fan-out → report → scale-down)."""
     asyncio.run(_submit(
         ctx.obj, manifest_uri,
         dry_run=dry_run, wait=wait, manage_fleet=manage_fleet,

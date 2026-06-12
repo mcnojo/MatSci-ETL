@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Block until Temporal + vLLM are healthy. Pulls endpoints from the
-# common/temporal and common/vllm terraform outputs (no flags, no editing).
+# shared/temporal and shared/vllm terraform outputs (no flags, no editing).
 #
 #   bin/wait_health.sh                 # checks both
 #   bin/wait_health.sh temporal        # only Temporal
@@ -34,7 +34,13 @@ need curl
 
 tf_out() {
   local module="$1" key="$2"
-  terraform -chdir="$REPO_ROOT/infra/terraform/$module" output -raw "$key" 2>/dev/null
+  local module_dir
+  case "$module" in
+    temporal) module_dir="$REPO_ROOT/shared/temporal/terraform" ;;
+    vllm)     module_dir="$REPO_ROOT/shared/vllm/terraform" ;;
+    *) echo "tf_out: unknown module $module" >&2; return 1 ;;
+  esac
+  terraform -chdir="$module_dir" output -raw "$key" 2>/dev/null
 }
 
 # Temporal gRPC: TCP-port check. Anything more (grpcurl + DescribeNamespace)
@@ -50,33 +56,36 @@ check_vllm() {
 }
 
 if $want_temporal; then
-  TEMPORAL_HOST=$(tf_out common/temporal cpu_pipeline_public_ip)
+  TEMPORAL_HOST=$(tf_out temporal cpu_pipeline_public_ip)
   if [[ -z "$TEMPORAL_HOST" ]]; then
-    echo "error: common/temporal has no cpu_pipeline_public_ip output — apply common/temporal first" >&2
+    echo "error: shared/temporal has no cpu_pipeline_public_ip output — apply shared/temporal first" >&2
     exit 1
   fi
   TEMPORAL_PORT=7233
 fi
 
 if $want_vllm; then
-  VLLM_HOST=$(tf_out common/vllm public_ip)
+  VLLM_HOST=$(tf_out vllm public_ip)
   if [[ -z "$VLLM_HOST" ]]; then
-    echo "error: common/vllm has no public_ip output — apply common/vllm first" >&2
+    echo "error: shared/vllm has no public_ip output — apply shared/vllm first" >&2
     exit 1
   fi
-  VLLM_PORT=$(tf_out common/vllm vllm_port)
+  VLLM_PORT=$(tf_out vllm vllm_port)
   VLLM_PORT="${VLLM_PORT:-8004}"
+  TREE_LLM_PORT=$(tf_out vllm tree_llm_port)
+  TREE_LLM_PORT="${TREE_LLM_PORT:-8005}"
 fi
 
 start=$(date +%s)
 temporal_ok=$($want_temporal && echo false || echo true)
-vllm_ok=$($want_vllm && echo false || echo true)
+vision_ok=$($want_vllm && echo false || echo true)
+tree_llm_ok=$($want_vllm && echo false || echo true)
 
 while true; do
   now=$(date +%s)
   elapsed=$((now - start))
   if (( elapsed > deadline_s )); then
-    echo "error: deadline exceeded ($deadline_s s) — temporal_ok=$temporal_ok vllm_ok=$vllm_ok" >&2
+    echo "error: deadline exceeded ($deadline_s s) — temporal=$temporal_ok vision=$vision_ok tree_llm=$tree_llm_ok" >&2
     exit 1
   fi
 
@@ -84,16 +93,20 @@ while true; do
     echo "[+${elapsed}s] temporal up ($TEMPORAL_HOST:$TEMPORAL_PORT)"
     temporal_ok=true
   fi
-  if ! $vllm_ok && check_vllm "$VLLM_HOST" "$VLLM_PORT"; then
-    echo "[+${elapsed}s] vllm up ($VLLM_HOST:$VLLM_PORT/health)"
-    vllm_ok=true
+  if ! $vision_ok && check_vllm "$VLLM_HOST" "$VLLM_PORT"; then
+    echo "[+${elapsed}s] vllm vision up ($VLLM_HOST:$VLLM_PORT/health)"
+    vision_ok=true
+  fi
+  if ! $tree_llm_ok && check_vllm "$VLLM_HOST" "$TREE_LLM_PORT"; then
+    echo "[+${elapsed}s] vllm tree_llm up ($VLLM_HOST:$TREE_LLM_PORT/health)"
+    tree_llm_ok=true
   fi
 
-  if $temporal_ok && $vllm_ok; then
+  if $temporal_ok && $vision_ok && $tree_llm_ok; then
     echo "ready"
     exit 0
   fi
 
-  echo "[+${elapsed}s] waiting (temporal=$temporal_ok vllm=$vllm_ok) — next poll in ${interval_s}s"
+  echo "[+${elapsed}s] waiting (temporal=$temporal_ok vision=$vision_ok tree_llm=$tree_llm_ok) — next poll in ${interval_s}s"
   sleep "$interval_s"
 done

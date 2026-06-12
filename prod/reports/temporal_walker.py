@@ -1,11 +1,4 @@
-"""Temporal-history walkers + aggregators.
-
-Two entry points, one shared aggregation pipeline:
-- walk_batch(client, batch_workflow_id) — DFS from a BatchRunWorkflow through
-  reachable children. Bounded by the workflow's reachable set.
-- walk_live_window(client, since, until) — list ProcessPdfWorkflow executions
-  closed inside [since, until], aggregate per-activity stats over them.
-"""
+"""Temporal-history walkers + aggregators — `walk_batch` (DFS from a root) and `walk_live_window` (visibility query)."""
 
 from __future__ import annotations
 
@@ -51,9 +44,6 @@ class WorkflowRecord:
     child_workflow_ids: list[str] = field(default_factory=list)
 
 
-# --- walkers ----------------------------------------------------------------
-
-
 async def walk_batch(client: Client, batch_workflow_id: str) -> list[WorkflowRecord]:
     """DFS in discovery order (parent before children) for stable aggregation."""
     sem = asyncio.Semaphore(_HISTORY_FETCH_CONCURRENCY)
@@ -80,13 +70,11 @@ async def walk_live_window(
     client: Client, since: datetime, until: datetime,
     *, workflow_type: str = "ProcessPdfWorkflow",
 ) -> list[WorkflowRecord]:
-    """List executions of `workflow_type` closed in [since, until] and fetch
-    their histories. Visibility query uses ISO-8601 timestamps."""
+    """List `workflow_type` executions closed in [since, until] and fetch histories."""
     if since.tzinfo is None or until.tzinfo is None:
         raise ValueError("walk_live_window: since/until must be timezone-aware")
 
-    # Temporal visibility: `CloseTime` filterable. Live runs never share a
-    # parent so each is a top-level execution — no child traversal needed.
+    # Live runs are always top-level — no child traversal.
     query = (
         f'WorkflowType = "{workflow_type}" '
         f'AND CloseTime BETWEEN "{_iso(since)}" AND "{_iso(until)}"'
@@ -184,9 +172,6 @@ def _terminal_outcome(et: int) -> str:
     }[et]
 
 
-# --- aggregators ------------------------------------------------------------
-
-
 def aggregate_workflows(records: list[WorkflowRecord]) -> list[WorkflowStats]:
     by_type: dict[str, list[WorkflowRecord]] = defaultdict(list)
     for rec in records:
@@ -263,7 +248,7 @@ def summarize(values: list[float]) -> Optional[StatSummary]:
 
 
 def _percentile(sv: list[float], pct: float) -> float:
-    # Linear-interpolation percentile; matches numpy default closely enough.
+    # Linear-interpolation percentile (numpy default).
     if len(sv) == 1:
         return sv[0]
     rank = (pct / 100.0) * (len(sv) - 1)
@@ -275,7 +260,6 @@ def _percentile(sv: list[float], pct: float) -> float:
 def batch_window(
     records: list[WorkflowRecord], batch_workflow_id: str,
 ) -> tuple[Optional[datetime], Optional[datetime], Optional[WorkflowExecutionStatus]]:
-    """Pull the BatchRunWorkflow's started_at / closed_at / status."""
     for rec in records:
         if rec.workflow_id == batch_workflow_id:
             return rec.started_at, rec.closed_at, rec.status

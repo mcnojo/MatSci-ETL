@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
-from shared.vllm_resolve import resolve_vllm_url
+from shared.vllm.resolve import resolve_vllm_url
 
 _T = TypeVar("_T")
 
@@ -44,7 +44,7 @@ async def _await_with_heartbeats(coro, *, interval_s: float = 20.0) -> _T:
         task.cancel()
         raise
 
-from prod.shared_infra.activity_models import (
+from shared.temporal.activity_models import (
     ChandraCallInput,
     ChandraCallOutput,
     LlmTextCallInput,

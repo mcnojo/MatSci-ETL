@@ -17,8 +17,8 @@ need() { command -v "$1" >/dev/null || { echo "error: $1 not on PATH" >&2; exit 
 need aws
 need terraform
 
-artifact_bucket=$(terraform -chdir="$REPO_ROOT/infra/terraform/common/temporal" output -raw artifact_bucket)
-incoming_prefix=$(terraform -chdir="$REPO_ROOT/infra/terraform/live" output -raw incoming_prefix 2>/dev/null || echo "live/incoming/")
+artifact_bucket=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw artifact_bucket)
+incoming_prefix=$(terraform -chdir="$REPO_ROOT/prod/live/terraform" output -raw incoming_prefix 2>/dev/null || echo "live/incoming/")
 
 pdfs=()
 for arg in "$@"; do
@@ -43,5 +43,5 @@ done
 
 echo
 echo "submitted. consumer picks each up within a few seconds; watch progress at:"
-temporal_ui_host=$(terraform -chdir="$REPO_ROOT/infra/terraform/common/temporal" output -raw cpu_pipeline_public_ip)
+temporal_ui_host=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw cpu_pipeline_public_ip)
 echo "  http://$temporal_ui_host:8233/namespaces/default/workflows"

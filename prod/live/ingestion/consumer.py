@@ -25,9 +25,9 @@ from temporalio.client import Client
 
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from prod.live.workflows.models import ProcessPdfWorkflowInput
-from prod.shared_infra.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from shared.temporal.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import load_pipeline_config
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 log = logging.getLogger("ingestion_consumer")
 
@@ -145,7 +145,7 @@ def main():
 
     ingestion_cfg = prod_cfg.get("ingestion", {})
     # Env var wins — the systemd unit on cpu-pipeline-01 injects this from the SSM
-    # parameter published by infra/terraform/live, so prod_config.yaml stays clean.
+    # parameter published by prod/live/terraform, so prod_config.yaml stays clean.
     queue_url = os.environ.get("OCR_LIVE_QUEUE_URL") or ingestion_cfg.get("queue_url")
     if not queue_url:
         log.error("queue_url unset — provide OCR_LIVE_QUEUE_URL or ingestion.queue_url in %s", CONFIG_PATH)

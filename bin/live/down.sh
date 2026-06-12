@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
 # Tear the live motif down.
 #
-#   live            destroy   →  SQS queue, S3 notification, SSM queue-URL param,
-#                                cross-module IAM attachment
-#   common/vllm     destroy   →  vLLM box
-#   common/temporal destroy   →  cpu-pipeline-01
+# Order (and why):
+#   shared/vllm     destroy   →  Kills the GPU box FIRST. It's the expensive
+#                                resource ($$$/hr) and has no cross-module
+#                                dependents, so getting rid of it before the
+#                                cpu_pipeline + cross-module SG churn is the
+#                                cheapest possible teardown.
+#   live            destroy   →  SQS queue + S3 notification + SSM queue-URL
+#                                param + cross-module IAM attachment. Must
+#                                precede shared/temporal because of the
+#                                cross-module IAM/SG references.
+#   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
+#                                S3 VPC endpoint. SSM tree_llm keys are NOT
+#                                here anymore — they live in shared/platform
+#                                and survive nightly teardown by design.
 #
-# After `live destroy`, the ocr-ingestion systemd unit on cpu-pipeline-01 will
-# fail its ExecStartPre (no SSM param) and restart-loop. Destroying common/temporal
-# clears that immediately; if you want to keep cpu-pipeline-01 up but stop
-# ingestion, just run `live destroy` and leave the loop running — Restart=always
-# costs nothing meaningful.
+# After `live destroy`, the ocr-ingestion systemd unit on cpu-pipeline-01
+# will fail its ExecStartPre (no SSM queue URL) and restart-loop. Destroying
+# shared/temporal in the next step clears that immediately. If you want to
+# keep cpu-pipeline-01 up but stop ingestion, just run `live destroy` and
+# leave the loop running — Restart=always costs nothing meaningful.
+#
+# shared/platform is intentionally NOT touched — operator-populated API key
+# slots must survive teardown. Use bin/tf.sh shared/platform destroy if you
+# really want to wipe them (requires removing prevent_destroy first).
 
 set -euo pipefail
 
@@ -30,14 +44,14 @@ fi
 
 step() { printf "\n=== %s ===\n" "$*"; }
 
+step "shared/vllm destroy (kill GPU first)"
+"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
+
 step "live destroy"
-"$TF" live destroy -auto-approve -input=false "${extra_args[@]}"
+"$TF" live destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
-step "common/vllm destroy"
-"$TF" common/vllm destroy -auto-approve -input=false -var "env_tag=prod" "${extra_args[@]}"
-
-step "common/temporal destroy"
-"$TF" common/temporal destroy -auto-approve -input=false "${extra_args[@]}"
+step "shared/temporal destroy"
+"$TF" shared/temporal destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
 echo
-echo "live motif down."
+echo "live motif down. shared/platform (SSM key slots) intentionally untouched."

@@ -10,7 +10,7 @@ S3 live/incoming -> SQS -> ingestion consumer -> Temporal ProcessPdfWorkflow
                                               -> S3 artifacts
 ```
 
-Two EC2 hosts (terraform-managed via `infra/terraform/common/`):
+Two EC2 hosts (terraform-managed via `shared/temporal/terraform/` and `shared/vllm/terraform/`):
 
 | Host            | Type       | Role                                               |
 | --------------- | ---------- | -------------------------------------------------- |
@@ -37,7 +37,7 @@ python -m etl.cli --pdf etl/hybrid.pdf
 ## Prod setup
 
 ```bash
-bin/live/up.sh             # terraform: common/temporal + common/vllm + live
+bin/live/up.sh             # terraform: shared/temporal + shared/vllm + live
 bin/live/submit.sh <pdf>…  # uploads to live/incoming/, S3 fires SQS → consumer
 bin/live/down.sh
 ```
@@ -48,7 +48,7 @@ bin/live/down.sh
 ## SQS queue URL handoff
 
 The SQS queue URL is published as SSM parameter `/ocr-bench/live/queue_url`
-by `infra/terraform/live`. The `ocr-ingestion` systemd unit fetches it at
+by `prod/live/terraform/`. The `ocr-ingestion` systemd unit fetches it at
 startup (`ExecStartPre`) and injects it as `OCR_LIVE_QUEUE_URL`. The
 consumer honors this env var over the value in `prod_config.yaml`, so the
 config file stays clean.

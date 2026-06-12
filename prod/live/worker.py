@@ -26,12 +26,12 @@ from prod.batch.workflows.activities import activities as batch_activities
 from prod.batch.workflows.batch_run import BatchRunWorkflow
 from prod.batch.workflows.shard import ShardWorkflow
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
-from prod.shared_infra.task_queues import (
+from shared.temporal.task_queues import (
     CPU_TASK_QUEUE,
     GPU_TASK_QUEUE,
     WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
 )
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 # CPU queue runs orchestration workflows (process-pdf, shard, batch-run) and
 # all CPU-bound activities (PyMuPDF, tree/asset construction, batch IO).

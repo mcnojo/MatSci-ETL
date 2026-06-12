@@ -35,7 +35,7 @@ from temporalio.client import WorkflowFailureError
 from temporalio.exceptions import CancelledError as TemporalCancelledError
 from temporalio.worker import Worker
 
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 with workflow.unsafe.imports_passed_through():
     from tests.integration._heartbeat_cancel_activity import (

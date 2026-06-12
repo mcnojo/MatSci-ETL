@@ -1,15 +1,4 @@
-"""Per-worker CloudWatch metrics → one StatSummary per metric per instance.
-
-CWAgent on each worker publishes into a namespace (default OCR/Batch/Worker;
-live workers publish into OCR/Live/Worker) at 10s resolution. Instances are
-enumerated by listing one always-present metric (`procstat_cpu_usage`).
-
-`fetch_gpu_stats` queries the parallel OCR/vLLM/GPU namespace fed by the
-nvidia-smi sidecar on the vLLM box.
-
-CW retention curve: 1s/10s for 3h, 60s for 15d, 300s for 63d, 3600s for 15mo.
-`_pick_period` matches that so reports built later still resolve.
-"""
+"""Per-worker + per-GPU CloudWatch metrics → one StatSummary per metric per instance."""
 
 from __future__ import annotations
 
@@ -38,9 +27,6 @@ _WORKER_PROCESS_PATTERNS = {
 class _MetricResult:
     timestamps: list[datetime]
     values: list[float]
-
-
-# --- worker (CPU + memory + net) --------------------------------------------
 
 
 def fetch_hardware_stats(
@@ -154,9 +140,6 @@ def _aggregate_net(
     return summarize(list(by_ts.values()))
 
 
-# --- GPU (nvidia-smi → OCR/vLLM/GPU sidecar) --------------------------------
-
-
 def fetch_gpu_stats(
     region: str, start: datetime, end: datetime,
     *, namespace: str = GPU_NAMESPACE,
@@ -194,10 +177,8 @@ async def fetch_gpu_stats_async(
     return await asyncio.to_thread(fetch_gpu_stats, region, start, end, namespace=namespace)
 
 
-# --- shared CloudWatch helpers ----------------------------------------------
-
-
 def _pick_period(end: datetime) -> int:
+    # CW retention curve: 60s for 15d, 300s for 63d, 3600s for 15mo.
     now = datetime.now(timezone.utc)
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
@@ -210,15 +191,12 @@ def _pick_period(end: datetime) -> int:
 
 
 def _padded_window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
-    # Pad ±60s: CWAgent buffers ~60s, so a metric written at t=end may not be
-    # visible at exact query end. CW datapoint timestamps are bucket starts,
-    # so padding doesn't pollute aggregation.
+    # CWAgent buffers ~60s; pad so metrics at t=end are visible.
     return start - timedelta(seconds=60), end + timedelta(seconds=120)
 
 
 def _enumerate_instances(cw, namespace: str, anchor_metric: str) -> list[str]:
-    """Walk a known-present metric in the namespace and pull unique InstanceId
-    dimensions. Returns sorted for deterministic report ordering."""
+    # Pull unique InstanceIds from a known-present metric; sorted for stable report order.
     instance_ids: set[str] = set()
     paginator = cw.get_paginator("list_metrics")
     for page in paginator.paginate(Namespace=namespace, MetricName=anchor_metric):
@@ -230,7 +208,7 @@ def _enumerate_instances(cw, namespace: str, anchor_metric: str) -> list[str]:
 
 
 def _enumerate_interfaces(cw, namespace: str, instance_id: str) -> list[str]:
-    """Non-loopback network interfaces with metrics for this instance."""
+    # Non-loopback interfaces with metrics for this instance.
     interfaces: set[str] = set()
     paginator = cw.get_paginator("list_metrics")
     for page in paginator.paginate(Namespace=namespace, MetricName="net_bytes_sent"):

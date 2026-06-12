@@ -11,7 +11,7 @@ import yaml
 from rich.console import Console
 
 from shared.s3_io import get_bytes
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 from .builder import (
     build_batch_report,
@@ -46,9 +46,6 @@ def _load_batch_cfg(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-# --- group ------------------------------------------------------------------
-
-
 @click.group()
 @click.option("--temporal-address", default="localhost:7233", show_default=True)
 @click.option("--temporal-namespace", default="default", show_default=True)
@@ -70,9 +67,6 @@ def cli(
     batch_cfg = _load_batch_cfg(batch_config) if Path(batch_config).exists() else {}
     ctx.obj["report_root_default"] = batch_cfg.get("report", {}).get("s3_root")
     ctx.obj["region_default"] = batch_cfg.get("fleet", {}).get("region", "us-west-2")
-
-
-# --- batch ------------------------------------------------------------------
 
 
 @cli.command()
@@ -115,9 +109,6 @@ async def _run_batch(
         f"items={report.items_total} ok={report.items_succeeded} fail={report.items_failed}",
         report.flags, uris,
     )
-
-
-# --- live -------------------------------------------------------------------
 
 
 @cli.command()
@@ -172,9 +163,6 @@ async def _run_live(
     )
 
 
-# --- compare ----------------------------------------------------------------
-
-
 @cli.command()
 @click.option("--batch", "batch_id", required=True,
               help="The batch_id to compare against (must already have a report on S3).")
@@ -205,10 +193,8 @@ async def _run_compare(
     if not resolved_out:
         raise click.BadParameter("no report root — pass --out or set batch_config.report.s3_root")
 
-    # The batch report may already exist on S3 from when the batch ran (the
-    # workflow's build_report_activity writes one at completion). Try to
-    # load it from there before rebuilding — same on-disk shape as
-    # write_batch_report() produces, so model_validate_json round-trips.
+    # write_batch_report() round-trips, so the workflow's end-of-run report
+    # serves as a cache here — rebuild only when absent.
     cached = _try_load_batch_report(resolved_out, batch_id)
     client = await connect_temporal(
         ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
@@ -264,9 +250,6 @@ def _live_window_human(d: timedelta) -> str:
     if s % 60 == 0:
         return f"{s // 60}m"
     return f"{s}s"
-
-
-# --- summary ----------------------------------------------------------------
 
 
 def _print_summary(

@@ -41,18 +41,28 @@ done
 # --- discover ----------------------------------------------------------------
 need() { command -v "$1" >/dev/null || { echo "error: $1 not on PATH" >&2; exit 1; }; }
 need aws
-need python3
 need terraform
+
+PYTHON="${REPO_ROOT}/env/bin/python"
+[[ -x "$PYTHON" ]] || { echo "error: venv not found at $PYTHON — run: python3 -m venv env && env/bin/pip install -e ." >&2; exit 1; }
+
+# Guard: batch motif must be up before submitting. The trigger Lambda is the
+# canonical indicator — if it doesn't exist, bin/batch/up.sh hasn't been run.
+_lambda_name=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw batch_trigger_lambda_name 2>/dev/null || true)
+if [[ -z "$_lambda_name" ]] || ! aws lambda get-function --function-name "$_lambda_name" --query 'Configuration.FunctionName' --output text >/dev/null 2>&1; then
+  echo "error: batch motif is not up — run bin/batch/up.sh first" >&2
+  exit 1
+fi
 
 pdfs=()
 while IFS= read -r -d '' f; do pdfs+=("$f"); done < <(find "$folder" -maxdepth 1 -type f -name "*.pdf" -print0 | sort -z)
 [[ ${#pdfs[@]} -gt 0 ]] || { echo "no PDFs found in $folder" >&2; exit 1; }
 echo "discovered ${#pdfs[@]} PDFs in $folder"
 
-artifact_bucket=$(terraform -chdir="$REPO_ROOT/infra/terraform/common/temporal" output -raw artifact_bucket)
-incoming_prefix=$(terraform -chdir="$REPO_ROOT/infra/terraform/batch" output -raw incoming_prefix 2>/dev/null || echo "batches/incoming/")
-report_root=$(terraform -chdir="$REPO_ROOT/infra/terraform/batch" output -raw batch_report_root 2>/dev/null || true)
-temporal_ui_host=$(terraform -chdir="$REPO_ROOT/infra/terraform/common/temporal" output -raw cpu_pipeline_public_ip)
+artifact_bucket=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw artifact_bucket)
+incoming_prefix=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw incoming_prefix 2>/dev/null || echo "batches/incoming/")
+report_root=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw batch_report_root 2>/dev/null || true)
+temporal_ui_host=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw cpu_pipeline_public_ip)
 
 if [[ -z "$batch_id" ]]; then
   base=$(basename "$folder" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-_' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
@@ -67,7 +77,7 @@ echo "batch_id: $batch_id"
 manifest_path=$(mktemp -t "${batch_id}.manifest.XXXXXX.json")
 trap 'rm -f "$manifest_path"' EXIT
 
-PYTHONPATH="$REPO_ROOT" python3 - \
+PYTHONPATH="$REPO_ROOT" "$PYTHON" - \
   "$artifact_bucket" "$incoming_prefix" "$batch_id" "$manifest_path" "$config_overrides" "${pdfs[@]}" <<'PY'
 import json, re, sys
 from pathlib import Path

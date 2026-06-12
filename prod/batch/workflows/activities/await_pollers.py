@@ -22,7 +22,7 @@ from temporalio.api.workflowservice.v1 import DescribeTaskQueueRequest
 from temporalio.client import Client
 from temporalio.exceptions import ApplicationError
 
-from shared.temporal_client import connect_temporal
+from shared.temporal.client import connect_temporal
 
 
 class AwaitPollersInput(BaseModel):

@@ -27,12 +27,26 @@ storage:
 # In prod the pipeline config is loaded from etl/config/pipeline_config.yaml
 # with these overrides applied. vision_server.base_url stays as the
 # `vllm-instance://` URL — workers resolve at activity boundary via EC2 tag
-# lookup (shared/vllm_resolve.py), driven by OCR_VLLM_ENV_TAG +
+# lookup (shared/vllm/resolve.py), driven by OCR_VLLM_ENV_TAG +
 # OCR_VLLM_PREFER_PRIVATE_IP set in the worker's systemd unit.
 pipeline_overrides:
   output:
     kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
     save_page_images: false         # no need to persist full-page renders in prod
+
+  # tree_llm runs as the co-hosted second vllm serve unit on the GPU box
+  # (shared/vllm provisions both). Switches from ollama/gemma4-mlx (laptop dev)
+  # to vLLM/gemma-4-E4B (prod) — same model family the laptop runs, served
+  # by vLLM instead of ollama. Resolver picks the box up via
+  # tree_llm_role=vllm-gemma-prod.
+  tree_llm:
+    provider: "openai"              # vLLM exposes the OpenAI Chat Completions API
+    model: "google/gemma-4-E4B"
+    model_fast: "google/gemma-4-E4B"
+    base_url: "vllm-instance://gemma:8005/v1"
+    api_key_env: null
+    prompt_style: "local"
+    max_response_tokens: 4096
 
 # EC2 instance tags (for infra scripts)
 instances:
@@ -41,4 +55,4 @@ instances:
     type: "m7i.xlarge"
   gpu:
     name: "ocr-bench-gpu-model-01"
-    type: "g6.2xlarge"
+    type: "g6e.xlarge"              # L40S 48GB — fits chandra + gemma-3-4b co-hosted

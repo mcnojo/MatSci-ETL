@@ -25,8 +25,16 @@ the happy path.
 # 1. Create the S3 bucket + DynamoDB lock table for terraform state.
 bin/bootstrap_tf_backend.sh
 
-# 2. Populate the tree_llm API keys in SSM. Empty SecureString params are
-#    created by common/temporal; you fill them in once.
+# 2. Apply shared/platform — long-lived SSM key slots that survive every
+#    nightly down.sh. Owned by its own state, never touched by motif
+#    up/down once set up.
+bin/tf.sh shared/platform init
+bin/tf.sh shared/platform apply
+
+# 3. Populate the tree_llm API keys in the slots created above. Done once;
+#    `lifecycle.ignore_changes = [value]` protects the values from being
+#    reset by subsequent applies, and `prevent_destroy = true` protects
+#    them from accidental destroys.
 aws ssm put-parameter \
     --name /ocr-bench/tree_llm/anthropic_api_key \
     --type SecureString --overwrite --value "sk-ant-..."
@@ -34,7 +42,7 @@ aws ssm put-parameter \
     --name /ocr-bench/tree_llm/openai_api_key \
     --type SecureString --overwrite --value "sk-..."
 
-# 3. The artifact bucket (chem-lit-artifacts) is read by terraform via a data
+# 4. The artifact bucket (chem-lit-artifacts) is read by terraform via a data
 #    source — pre-create it manually if it doesn't already exist:
 aws s3 mb s3://chem-lit-artifacts --region us-west-2
 ```
@@ -90,13 +98,15 @@ No Temporal, no SSM read, no batch fleet. Operator continues to run
 | `submit.sh` says "document_id collision"           | rename the colliding PDFs (filenames sanitize to lowercase alphanumeric+hyphen) |
 | live consumer keeps restarting                     | likely the SSM `queue_url` param doesn't exist — re-apply `bin/tf.sh live`     |
 | Workflow stuck "waiting for workers"               | check ASG `Desired` vs. quota; `bin/tf.sh batch output` shows ASG names        |
-| Want to nuke everything                             | `bin/<motif>/down.sh` is always safe — SSM API keys + S3 bucket survive        |
+| Want to nuke everything                             | `bin/<motif>/down.sh` is always safe — `shared/platform` (SSM key slots) and the artifact S3 bucket are never touched |
 
 To fully clear an account (very rare):
 
 ```bash
-aws ssm delete-parameter --name /ocr-bench/tree_llm/anthropic_api_key
-aws ssm delete-parameter --name /ocr-bench/tree_llm/openai_api_key
+# shared/platform has prevent_destroy on the SSM slots — drop that lifecycle
+# block first, then:
+bin/tf.sh shared/platform destroy
+
 aws s3 rb s3://chem-lit-artifacts --force      # destructive
 aws s3 rb s3://ocr-benchmarking-tfstate --force
 aws dynamodb delete-table --table-name ocr-benchmarking-tflock
@@ -128,14 +138,14 @@ bin/
 ├── tf.sh                     # thin terraform wrapper (passes _backend.hcl)
 ├── wait_health.sh            # poll Temporal + vLLM /health using tf outputs
 ├── batch/
-│   ├── up.sh                 # common/temporal + common/vllm + batch + wait
+│   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + batch + wait
 │   ├── submit.sh             # validate manifest, upload PDFs, upload manifest LAST
-│   └── down.sh               # batch + common/vllm + common/temporal destroy
+│   └── down.sh               # shared/vllm + batch + shared/temporal destroy (platform untouched)
 ├── live/
-│   ├── up.sh                 # common/temporal + common/vllm + live + wait
+│   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + live + wait
 │   ├── submit.sh             # upload PDFs to live/incoming/ (S3 → SQS fires)
-│   └── down.sh               # live + common/vllm + common/temporal destroy
+│   └── down.sh               # shared/vllm + live + shared/temporal destroy (platform untouched)
 └── dev/
-    ├── up_vllm.sh            # common/vllm only, env_tag=dev
+    ├── up_vllm.sh            # shared/vllm only, env_tag=dev
     └── down_vllm.sh
 ```
