@@ -25,7 +25,7 @@ from shared.temporal.task_queues import (
     CPU_TASK_QUEUE,
     GPU_TASK_QUEUE,
 )
-from shared.config_loader import load_pipeline_config
+from shared.config_loader import apply_prod_overlay, load_pipeline_config
 from shared.temporal.client import connect_temporal
 from shared.temporal.operator_address import resolve_operator_address
 
@@ -52,6 +52,11 @@ _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
               default="prod/batch/config/batch_config.yaml", show_default=True)
 @click.option("--pipeline-config", "pipeline_config_path",
               default="etl/config/pipeline_config.yaml", show_default=True)
+@click.option("--prod-overlay", "prod_overlay_path",
+              default="prod/live/config/prod_config.yaml", show_default=True,
+              help="Overlay YAML with pipeline_overrides + storage replacing dev "
+                   "defaults (vllm endpoints, prod paths). Pass '' to skip the "
+                   "overlay for docker-compose dev runs.")
 @click.option("--temporal-address", default=None,
               help="Temporal gRPC endpoint. Resolution order: flag → "
                    "TEMPORAL_ADDRESS env → shared/temporal terraform output "
@@ -67,6 +72,7 @@ def cli(
     ctx: click.Context,
     config_path: str,
     pipeline_config_path: str,
+    prod_overlay_path: str,
     temporal_address: str | None,
     temporal_namespace: str,
     terraform_dir: str,
@@ -84,6 +90,7 @@ def cli(
     ctx.ensure_object(dict)
     ctx.obj["batch_cfg"] = _load_yaml(config_path)
     ctx.obj["pipeline_config_path"] = pipeline_config_path
+    ctx.obj["prod_overlay_path"] = prod_overlay_path
     resolved_address, source = resolve_operator_address(temporal_address)
     if source != "flag":
         console.print(f"[dim]Temporal address: {resolved_address} (from {source})[/dim]")
@@ -229,6 +236,13 @@ async def _start_workflow(
     concurrency = batch_cfg.get("concurrency", {})
     shard_size = batch_cfg.get("planner", {}).get("shard_size", DEFAULT_SHARD_SIZE)
     pipeline_config = load_pipeline_config(ctx_obj["pipeline_config_path"])
+    overlay_path = ctx_obj.get("prod_overlay_path")
+    if overlay_path:
+        # Without the overlay, batch ships dev config (laptop Ollama, laptop
+        # paths) to prod workers. Live's SQS consumer already does the same
+        # merge — both motifs now share apply_prod_overlay.
+        pipeline_config = apply_prod_overlay(pipeline_config, overlay_path)
+        console.print(f"[dim]Pipeline overlay: {overlay_path}[/dim]")
     workflow_id = batch_workflow_id(manifest.batch_id)
 
     handle = await client.start_workflow(

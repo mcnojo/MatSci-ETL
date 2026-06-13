@@ -56,3 +56,40 @@ def load_pipeline_config(config_path: str | Path) -> dict:
     cfg["_config_dir"] = str(config_dir)
     _anchor_relative_paths(cfg, config_dir)
     return cfg
+
+
+def apply_prod_overlay(config: dict, overlay_path: str | Path) -> dict:
+    """Layer a prod overlay onto a base pipeline config (in-place + return).
+
+    The overlay YAML must have the shape produced by `prod/live/config/prod_config.yaml`:
+      pipeline_overrides:
+        <section>:
+          <key>: <value>      # None entries are ignored (lets overlays "clear" defaults)
+      storage:                  # optional; if present, replaces config['storage'] wholesale
+        ...
+
+    pipeline_overrides is merged one level deep (section dicts get `.update(...)`d).
+    storage is replaced wholesale because prod toggles backend=local→s3 which can't
+    be expressed as a key-merge.
+
+    Single source of truth for the production-vs-dev merge: live's SQS consumer
+    and batch's `cli submit` both go through here. Missing overlay file raises
+    FileNotFoundError so misconfiguration is loud, not silent.
+    """
+    overlay_path = Path(overlay_path).resolve()
+    with open(overlay_path) as f:
+        overlay = yaml.safe_load(f) or {}
+
+    overrides = overlay.get("pipeline_overrides", {})
+    for section, values in overrides.items():
+        if isinstance(values, dict):
+            config.setdefault(section, {}).update(
+                {k: v for k, v in values.items() if v is not None}
+            )
+        else:
+            config[section] = values
+
+    if "storage" in overlay:
+        config["storage"] = overlay["storage"]
+
+    return config

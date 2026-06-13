@@ -26,7 +26,7 @@ from temporalio.client import Client
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from prod.live.workflows.models import ProcessPdfWorkflowInput
 from shared.temporal.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
-from shared.config_loader import load_pipeline_config
+from shared.config_loader import apply_prod_overlay, load_pipeline_config
 from shared.temporal.client import connect_temporal
 
 log = logging.getLogger("ingestion_consumer")
@@ -109,25 +109,15 @@ async def poll_loop(
             log.info("Workflow %s started, message deleted", workflow_id)
 
 
-def _load_pipeline_config(prod_cfg: dict) -> dict:
-    """Load the ETL pipeline config and apply prod overrides."""
+def _load_pipeline_config(prod_cfg_path: str | Path) -> dict:
+    """Load the ETL pipeline config and apply prod overrides.
+
+    Goes through the shared loader+overlay so live and batch use identical
+    merge semantics (see shared/config_loader.py::apply_prod_overlay).
+    """
     base_path = Path(__file__).resolve().parents[3] / "etl" / "config" / "pipeline_config.yaml"
     config = load_pipeline_config(base_path)
-
-    overrides = prod_cfg.get("pipeline_overrides", {})
-    for section, values in overrides.items():
-        if section not in config:
-            config[section] = {}
-        if isinstance(values, dict):
-            config[section].update({k: v for k, v in values.items() if v is not None})
-        else:
-            config[section] = values
-
-    # Apply storage config from prod
-    if "storage" in prod_cfg:
-        config["storage"] = prod_cfg["storage"]
-
-    return config
+    return apply_prod_overlay(config, prod_cfg_path)
 
 
 CONFIG_PATH = "prod/live/config/prod_config.yaml"
@@ -158,7 +148,7 @@ def main():
     temporal_address = temporal_cfg.get("address", "localhost:7233")
     temporal_namespace = temporal_cfg.get("namespace", "default")
 
-    pipeline_config = _load_pipeline_config(prod_cfg)
+    pipeline_config = _load_pipeline_config(CONFIG_PATH)
 
     sqs_client = boto3.client(
         "sqs",
