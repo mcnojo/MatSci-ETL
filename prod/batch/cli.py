@@ -21,9 +21,10 @@ from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.common import WorkflowIDReusePolicy
 
 from shared.temporal.task_queues import (
+    BATCH_CONTROL_TQ,
+    BATCH_CPU_TQ,
+    BATCH_GPU_TQ,
     BATCH_WORKFLOW_EXECUTION_TIMEOUT,
-    CPU_TASK_QUEUE,
-    GPU_TASK_QUEUE,
 )
 from shared.config_loader import apply_prod_overlay, load_pipeline_config
 from shared.temporal.client import connect_temporal
@@ -41,7 +42,11 @@ from .workflows.models import BatchRunInput, BatchRunOutput
 
 console = Console()
 
-_QUEUE_NAMES = {"cpu": CPU_TASK_QUEUE, "gpu": GPU_TASK_QUEUE}
+_QUEUE_NAMES = {
+    "control": BATCH_CONTROL_TQ,
+    "cpu": BATCH_CPU_TQ,
+    "gpu": BATCH_GPU_TQ,
+}
 
 # Resolved relative to this file so the CLI works regardless of CWD.
 _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
@@ -261,7 +266,7 @@ async def _start_workflow(
             ),
         ),
         id=workflow_id,
-        task_queue=CPU_TASK_QUEUE,
+        task_queue=BATCH_CONTROL_TQ,
         execution_timeout=BATCH_WORKFLOW_EXECUTION_TIMEOUT,
         id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
     )
@@ -420,7 +425,7 @@ async def _cancel(ctx_obj: dict, batch_id: str) -> None:
 
 @cli.command("wait-for-workers")
 @click.option("--queues", "queues_str", default="cpu,gpu", show_default=True,
-              help="Comma-separated queues to wait on.")
+              help="Comma-separated queues to wait on: control, cpu, gpu.")
 @click.option("--timeout", "timeout_s", default=600, show_default=True, type=int)
 @click.option("--poll-interval", "poll_s", default=5.0, show_default=True, type=float)
 @click.pass_context
@@ -441,7 +446,7 @@ async def _wait_for_workers(
             f"unknown queues: {sorted(invalid)} (valid: {sorted(_QUEUE_NAMES)})",
         )
     if not requested:
-        raise click.BadParameter("--queues must include at least one of: cpu, gpu")
+        raise click.BadParameter(f"--queues must include at least one of: {sorted(_QUEUE_NAMES)}")
     targets = [_QUEUE_NAMES[q] for q in requested]
     client = await connect_temporal(
         ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],

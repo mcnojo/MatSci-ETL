@@ -7,8 +7,10 @@ on a 1-PDF manifest, running against your existing local Temporal
 
 Preconditions (all on localhost):
   - Temporal server reachable at localhost:7233
-  - A worker registered for cpu-task-queue AND gpu-task-queue
-    (i.e. `make worker` is running in another terminal)
+  - A batch worker running all three lanes:
+        python -m prod.batch.worker --queues control,cpu,gpu
+    Single-process multi-lane mode is fine for the e2e — production splits
+    lanes across hosts but Temporal queue routing is identical.
   - vLLM endpoint available per etl/config/pipeline_config.yaml
 
 If any precondition is unmet, the test SKIPS with a clear message rather
@@ -63,8 +65,8 @@ async def _run() -> int:
     from prod.batch.workflows.batch_run import BatchRunWorkflow
     from prod.batch.workflows.models import BatchRunInput, BatchRunOutput
     from shared.temporal.task_queues import (
+        BATCH_CONTROL_TQ,
         BATCH_WORKFLOW_EXECUTION_TIMEOUT,
-        CPU_TASK_QUEUE,
     )
     from shared.config_loader import load_pipeline_config
     from shared.temporal.client import connect_temporal
@@ -117,7 +119,7 @@ async def _run() -> int:
             BatchRunWorkflow.run,
             input_obj,
             id=f"batch-{batch_id}",
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=BATCH_CONTROL_TQ,
             execution_timeout=BATCH_WORKFLOW_EXECUTION_TIMEOUT,
         )
 
@@ -131,8 +133,9 @@ async def _run() -> int:
         except asyncio.TimeoutError:
             print(
                 f"FAIL: workflow did not complete within {WAIT_TIMEOUT_S}s. "
-                f"Likely the worker is not running (make worker) or vLLM is "
-                f"unreachable. Inspect at http://localhost:8233."
+                f"Likely the worker is not running "
+                f"(`python -m prod.batch.worker --queues control,cpu,gpu`) "
+                f"or vLLM is unreachable. Inspect at http://localhost:8233."
             )
             return 1
 

@@ -16,22 +16,22 @@ output "batch_report_root" {
 }
 
 output "cpu_queue_asg_name" {
-  description = "cpu-task-queue ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
+  description = "batch-cpu-tq ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
   value       = aws_autoscaling_group.cpu_queue.name
 }
 
 output "gpu_queue_asg_name" {
-  description = "gpu-task-queue ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
+  description = "batch-gpu-tq ASG name. Source of truth for prod/batch/cli.py's fleet wiring (read via `terraform output`)."
   value       = aws_autoscaling_group.gpu_queue.name
 }
 
 output "cpu_queue_asg_arn" {
-  description = "cpu-task-queue ASG ARN."
+  description = "batch-cpu-tq ASG ARN."
   value       = aws_autoscaling_group.cpu_queue.arn
 }
 
 output "gpu_queue_asg_arn" {
-  description = "gpu-task-queue ASG ARN."
+  description = "batch-gpu-tq ASG ARN."
   value       = aws_autoscaling_group.gpu_queue.arn
 }
 
@@ -39,12 +39,12 @@ output "gpu_queue_asg_arn" {
 # `terraform output` (prod/batch/cli.py). Reading off the ASG resource itself
 # so the value matches what AWS will actually accept on SetDesiredCapacity.
 output "cpu_queue_max_size" {
-  description = "cpu-task-queue ASG max_size. scale_fleet_up_activity passes this as cpu_queue_desired."
+  description = "batch-cpu-tq ASG max_size. scale_fleet_up_activity passes this as cpu_queue_desired."
   value       = aws_autoscaling_group.cpu_queue.max_size
 }
 
 output "gpu_queue_max_size" {
-  description = "gpu-task-queue ASG max_size. scale_fleet_up_activity passes this as gpu_queue_desired."
+  description = "batch-gpu-tq ASG max_size. scale_fleet_up_activity passes this as gpu_queue_desired."
   value       = aws_autoscaling_group.gpu_queue.max_size
 }
 

@@ -25,7 +25,7 @@ from temporalio.client import Client
 
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from prod.live.workflows.models import ProcessPdfWorkflowInput
-from shared.temporal.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from shared.temporal.task_queues import LIVE_CPU_TQ, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import apply_prod_overlay, load_pipeline_config
 from shared.temporal.client import connect_temporal
 
@@ -95,7 +95,7 @@ async def poll_loop(
                         config=pipeline_config,
                     ),
                     id=workflow_id,
-                    task_queue=CPU_TASK_QUEUE,
+                    task_queue=LIVE_CPU_TQ,
                     execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
                 )
             except Exception:

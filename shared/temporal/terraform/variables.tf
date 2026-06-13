@@ -29,7 +29,7 @@ variable "subnet_id" {
 }
 
 variable "instance_type" {
-  description = "cpu-pipeline-01 instance type. Hosts Temporal, Postgres, the always-on cpu-task-queue worker, and the live consumer."
+  description = "cpu-pipeline-01 instance type. Hosts Temporal, Postgres, the always-on live worker (live-cpu-tq + live-gpu-tq), the batch control worker (batch-control-tq), and the live consumer."
   type        = string
   default     = "m7i.xlarge"
 }
@@ -83,13 +83,13 @@ variable "live_ssm_prefix" {
 }
 
 variable "max_concurrent_cpu" {
-  description = "Per-process cap on cpu-task-queue activities for the local worker."
+  description = "Per-process cap on live-cpu-tq + batch-control-tq activities for the local workers on cpu-pipeline-01."
   type        = number
   default     = 8
 }
 
 variable "max_concurrent_gpu" {
-  description = "Per-process cap on gpu-task-queue activities for the local worker."
+  description = "Per-process cap on live-gpu-tq activities for the local worker on cpu-pipeline-01."
   type        = number
   default     = 4
 }

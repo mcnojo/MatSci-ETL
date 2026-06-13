@@ -18,7 +18,7 @@ GPU_NAMESPACE = "OCR/vLLM/GPU"
 
 _WORKER_PROCESS_PATTERNS = {
     # Each motif's worker process — used as the procstat `pattern` dimension.
-    BATCH_NAMESPACE: "prod.live.worker",  # batch ASGs reuse prod.live.worker
+    BATCH_NAMESPACE: "prod.batch.worker",
     LIVE_NAMESPACE: "prod.live.worker",
 }
 
@@ -46,7 +46,7 @@ def fetch_hardware_stats(
         return [], period
 
     stats: list[WorkerInstanceStats] = []
-    process_pattern = _WORKER_PROCESS_PATTERNS.get(namespace, "prod.live.worker")
+    process_pattern = _WORKER_PROCESS_PATTERNS[namespace]
     for inst in instance_ids:
         interfaces = _enumerate_interfaces(cw, namespace, inst)
         queries = _build_worker_queries(inst, interfaces, namespace, period, process_pattern)

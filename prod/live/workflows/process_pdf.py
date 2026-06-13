@@ -20,6 +20,7 @@ import asyncio
 from pathlib import Path
 
 from temporalio import workflow
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from etl.pipeline.activities import (
@@ -46,14 +47,16 @@ with workflow.unsafe.imports_passed_through():
         LlmTextCallInput,
     )
     from shared.temporal.task_queues import (
+        BATCH_CPU_TQ,
+        BATCH_GPU_TQ,
         CPU_ACTIVITY_TIMEOUT,
         CPU_HEARTBEAT_TIMEOUT,
-        CPU_TASK_QUEUE,
         DEFAULT_RETRY_POLICY,
         GPU_ACTIVITY_TIMEOUT,
         GPU_HEARTBEAT_TIMEOUT,
         GPU_RETRY_POLICY,
-        GPU_TASK_QUEUE,
+        LIVE_CPU_TQ,
+        LIVE_GPU_TQ,
     )
     from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
     from shared.prompts.etl import get_prompt
@@ -63,6 +66,16 @@ with workflow.unsafe.imports_passed_through():
         ProcessPdfWorkflowInput,
         ProcessPdfWorkflowOutput,
     )
+
+
+# Motif self-detection: ProcessPdfWorkflow runs in both live and batch modes.
+# The caller starts it on a CPU queue (LIVE_CPU_TQ or BATCH_CPU_TQ); the
+# matching GPU sibling is derived from there. Keeps motif decisions out of
+# the input model — the queue it was scheduled on IS the motif signal.
+_GPU_SIBLING = {
+    LIVE_CPU_TQ: LIVE_GPU_TQ,
+    BATCH_CPU_TQ: BATCH_GPU_TQ,
+}
 
 
 def _flatten(nodes):
@@ -97,11 +110,20 @@ class ProcessPdfWorkflow:
         config = input.config
         summary = empty_summary(input.document_id, input.run_id)
 
+        cpu_q = workflow.info().task_queue
+        gpu_q = _GPU_SIBLING.get(cpu_q)
+        if gpu_q is None:
+            raise ApplicationError(
+                f"ProcessPdfWorkflow started on unrecognized task queue "
+                f"{cpu_q!r}; expected one of {sorted(_GPU_SIBLING)}",
+                non_retryable=True,
+            )
+
         # Stage 0: Load pages (CPU)
         load_out = await workflow.execute_activity(
             load_pages_activity,
             LoadPagesInput(pdf_path=input.pdf_path),
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=cpu_q,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
@@ -117,7 +139,7 @@ class ProcessPdfWorkflow:
 
         # Stage 1: Build tree — workflow drives orchestration, every LLM call is a Temporal activity
         opt = build_opt_from_config(config)
-        call_llm = self._make_call_llm(config, summary)
+        call_llm = self._make_call_llm(config, summary, gpu_q)
         tree = await build_tree(
             pages, opt,
             call_llm=call_llm,
@@ -128,7 +150,7 @@ class ProcessPdfWorkflow:
         node_count = sum(1 for _ in _flatten(tree.root_nodes))
 
         if input.skip_enrichment:
-            return await self._finalize(input, config, tree, summary, node_count, total_pages)
+            return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
 
         # Stage 2: Extract visual assets (CPU)
         page_ranges = [
@@ -143,7 +165,7 @@ class ProcessPdfWorkflow:
                 config=config,
                 page_ranges=page_ranges,
             ),
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=cpu_q,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
@@ -152,7 +174,7 @@ class ProcessPdfWorkflow:
 
         # Stage 3: Per-image Chandra OCR (GPU) — fan out
         if config["enrichment"]["run_ocr"]:
-            await self._enrich_ocr(page_elements, config, summary)
+            await self._enrich_ocr(page_elements, config, summary, gpu_q)
 
         # Stage 4: Assign elements to tree (CPU)
         assign_out = await workflow.execute_activity(
@@ -164,7 +186,7 @@ class ProcessPdfWorkflow:
                 document_id=input.document_id,
                 config=config,
             ),
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=cpu_q,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
@@ -173,12 +195,12 @@ class ProcessPdfWorkflow:
 
         # Stage 5: Figure-aware re-summarization (GPU) — per-node fan out + post-order sweep
         if config.get("enrichment", {}).get("figure_aware_resummarize", True):
-            await self._resummarize(tree, config, summary)
+            await self._resummarize(tree, config, summary, gpu_q)
 
         # Stage 6: Finalize
-        return await self._finalize(input, config, tree, summary, node_count, total_pages)
+        return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
 
-    def _make_call_llm(self, config: dict, summary: dict):
+    def _make_call_llm(self, config: dict, summary: dict, gpu_q: str):
         """Closure that schedules llm_text_call_activity and merges metrics."""
         async def call(model, prompt, *, json_mode=False, temperature=0.0) -> LlmResult:
             result = await workflow.execute_activity(
@@ -187,7 +209,7 @@ class ProcessPdfWorkflow:
                     config=config, model=model, prompt=prompt,
                     json_mode=json_mode, temperature=temperature,
                 ),
-                task_queue=GPU_TASK_QUEUE,
+                task_queue=gpu_q,
                 start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                 heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                 retry_policy=GPU_RETRY_POLICY,
@@ -207,7 +229,7 @@ class ProcessPdfWorkflow:
         return call
 
     async def _enrich_ocr(
-        self, page_elements: dict[int, list[dict]], config: dict, summary: dict,
+        self, page_elements: dict[int, list[dict]], config: dict, summary: dict, gpu_q: str,
     ) -> None:
         vision_cfg = config["vision_server"]
         ocr_model_label = f"ocr:{vision_cfg['ocr_model']}"
@@ -233,7 +255,7 @@ class ProcessPdfWorkflow:
                         image_path=elem["asset_path"],
                         prompt=CHANDRA_OCR_LAYOUT_PROMPT,
                     ),
-                    task_queue=GPU_TASK_QUEUE,
+                    task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
@@ -257,7 +279,7 @@ class ProcessPdfWorkflow:
                 tg.create_task(call_one(page_idx, elem_idx))
 
     async def _resummarize(
-        self, tree, config: dict, summary: dict,
+        self, tree, config: dict, summary: dict, gpu_q: str,
     ) -> None:
         text_cfg = config["tree_llm"]
         prompt_style = (text_cfg.get("prompt_style") or "local").lower()
@@ -283,7 +305,7 @@ class ProcessPdfWorkflow:
                 result = await workflow.execute_activity(
                     llm_text_call_activity,
                     LlmTextCallInput(config=config, model=model_strong, prompt=prompt),
-                    task_queue=GPU_TASK_QUEUE,
+                    task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
@@ -326,7 +348,7 @@ class ProcessPdfWorkflow:
                 result = await workflow.execute_activity(
                     llm_text_call_activity,
                     LlmTextCallInput(config=config, model=model_fast, prompt=prompt),
-                    task_queue=GPU_TASK_QUEUE,
+                    task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
                     retry_policy=GPU_RETRY_POLICY,
@@ -355,6 +377,7 @@ class ProcessPdfWorkflow:
         summary: dict,
         node_count: int,
         total_pages: int,
+        cpu_q: str,
     ) -> ProcessPdfWorkflowOutput:
         output_path = self._tree_path(input, config)
         final_out = await workflow.execute_activity(
@@ -364,7 +387,7 @@ class ProcessPdfWorkflow:
                 output_path=output_path,
                 pretty_print=config.get("output", {}).get("pretty_print_json", True),
             ),
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=cpu_q,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,

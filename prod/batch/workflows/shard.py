@@ -26,7 +26,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from prod.live.workflows.process_pdf import ProcessPdfWorkflow
     from shared.temporal.task_queues import (
-        CPU_TASK_QUEUE,
+        BATCH_CPU_TQ,
         WORKFLOW_EXECUTION_TIMEOUT,
     )
 
@@ -56,7 +56,10 @@ class ShardWorkflow:
                             config=input.pipeline_config,
                         ),
                         id=child_id,
-                        task_queue=CPU_TASK_QUEUE,
+                        # Batch mode: ProcessPdfWorkflow runs on BATCH_CPU_TQ
+                        # and its activity scheduler resolves the matching
+                        # GPU sibling (BATCH_GPU_TQ) from workflow.info().
+                        task_queue=BATCH_CPU_TQ,
                         execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
                         # USE_EXISTING: if a prior attempt of the same batch
                         # already started this PDF and it's still running,

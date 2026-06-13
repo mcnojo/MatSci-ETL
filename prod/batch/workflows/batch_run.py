@@ -66,11 +66,12 @@ with workflow.unsafe.imports_passed_through():
         write_report_activity,
     )
     from shared.temporal.task_queues import (
+        BATCH_CONTROL_TQ,
+        BATCH_CPU_TQ,
+        BATCH_GPU_TQ,
         CPU_ACTIVITY_TIMEOUT,
         CPU_HEARTBEAT_TIMEOUT,
-        CPU_TASK_QUEUE,
         DEFAULT_RETRY_POLICY,
-        GPU_TASK_QUEUE,
         NO_RETRY_POLICY,
         SHARD_WORKFLOW_EXECUTION_TIMEOUT,
     )
@@ -112,7 +113,7 @@ class BatchRunWorkflow:
         fetch_out = await workflow.execute_activity(
             fetch_manifest_activity,
             FetchManifestInput(manifest_uri=input.manifest_uri),
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=BATCH_CONTROL_TQ,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
@@ -153,7 +154,7 @@ class BatchRunWorkflow:
                         gpu_queue_asg_name=input.gpu_queue_asg_name,
                         gpu_queue_desired=input.gpu_queue_desired,
                     ),
-                    task_queue=CPU_TASK_QUEUE,
+                    task_queue=BATCH_CONTROL_TQ,
                     start_to_close_timeout=_SCALE_UP_TIMEOUT,
                     heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
                     retry_policy=DEFAULT_RETRY_POLICY,
@@ -164,10 +165,13 @@ class BatchRunWorkflow:
                     await_pollers_activity,
                     AwaitPollersInput(
                         namespace=workflow.info().namespace,
-                        task_queues=[CPU_TASK_QUEUE, GPU_TASK_QUEUE],
+                        # Verify the WORK queues have pollers — the control
+                        # queue is polled by an always-on worker on
+                        # cpu-pipeline-01 so it never needs verification.
+                        task_queues=[BATCH_CPU_TQ, BATCH_GPU_TQ],
                         timeout_s=input.worker_registration_timeout_s,
                     ),
-                    task_queue=CPU_TASK_QUEUE,
+                    task_queue=BATCH_CONTROL_TQ,
                     start_to_close_timeout=(
                         timedelta(seconds=input.worker_registration_timeout_s) + _AWAIT_POLLERS_BUFFER
                     ),
@@ -215,7 +219,7 @@ class BatchRunWorkflow:
                     per_item=per_item,
                     failures=failures,
                 ),
-                task_queue=CPU_TASK_QUEUE,
+                task_queue=BATCH_CONTROL_TQ,
                 start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
                 heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
                 retry_policy=DEFAULT_RETRY_POLICY,
@@ -233,7 +237,7 @@ class BatchRunWorkflow:
                             report_root=input.report_root,
                             pull_hardware=True,
                         ),
-                        task_queue=CPU_TASK_QUEUE,
+                        task_queue=BATCH_CONTROL_TQ,
                         start_to_close_timeout=_BUILD_REPORT_TIMEOUT,
                         heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
                         retry_policy=DEFAULT_RETRY_POLICY,
@@ -270,7 +274,7 @@ class BatchRunWorkflow:
                         cpu_queue_asg_name=input.cpu_queue_asg_name,
                         gpu_queue_asg_name=input.gpu_queue_asg_name,
                     ),
-                    task_queue=CPU_TASK_QUEUE,
+                    task_queue=BATCH_CONTROL_TQ,
                     start_to_close_timeout=_SCALE_DOWN_TIMEOUT,
                     heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
                     retry_policy=DEFAULT_RETRY_POLICY,
@@ -319,7 +323,7 @@ class BatchRunWorkflow:
                             max_in_flight=pdfs_per_shard_in_flight,
                         ),
                         id=child_id,
-                        task_queue=CPU_TASK_QUEUE,
+                        task_queue=BATCH_CPU_TQ,
                         execution_timeout=SHARD_WORKFLOW_EXECUTION_TIMEOUT,
                         id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
                     )

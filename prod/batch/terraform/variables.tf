@@ -29,25 +29,25 @@ variable "subnet_ids" {
 }
 
 variable "cpu_queue_instance_types" {
-  description = "Mixed-instances override list for the cpu-task-queue fleet. Sized for doclayout-yolo + PyMuPDF under bounded torch threads (OMP=2)."
+  description = "Mixed-instances override list for the batch-cpu-tq fleet. Sized for doclayout-yolo + PyMuPDF under bounded torch threads (OMP=2)."
   type        = list(string)
   default     = ["c7i.xlarge", "m7i.xlarge", "c7i.large"]
 }
 
 variable "gpu_queue_instance_types" {
-  description = "Mixed-instances override list for the gpu-task-queue fleet. The work is HTTP IO to vLLM, so CPU sizes suffice (no local GPU)."
+  description = "Mixed-instances override list for the batch-gpu-tq fleet. The work is HTTP IO to vLLM, so CPU sizes suffice (no local GPU)."
   type        = list(string)
   default     = ["c7i.large", "m7i.large", "c5.large"]
 }
 
 variable "cpu_queue_max_size" {
-  description = "cpu-task-queue ASG ceiling. Bounded by Standard Spot vCPU quota."
+  description = "batch-cpu-tq ASG ceiling. Bounded by Standard Spot vCPU quota."
   type        = number
   default     = 2
 }
 
 variable "gpu_queue_max_size" {
-  description = "gpu-task-queue ASG ceiling. Also bounded by Standard Spot vCPU quota (no G/VT quota — see gpu_queue_instance_types)."
+  description = "batch-gpu-tq ASG ceiling. Also bounded by Standard Spot vCPU quota (no G/VT quota — see gpu_queue_instance_types)."
   type        = number
   default     = 2
 }
@@ -88,13 +88,13 @@ variable "temporal_namespace" {
 }
 
 variable "max_concurrent_cpu" {
-  description = "Per-instance max_concurrent_activities on cpu-task-queue. Sized for c7i.xlarge × OMP=2 (8 threads on 4 cores)."
+  description = "Per-instance max_concurrent_activities on batch-cpu-tq. Sized for c7i.xlarge × OMP=2 (8 threads on 4 cores)."
   type        = number
   default     = 4
 }
 
 variable "max_concurrent_gpu" {
-  description = "Per-instance max_concurrent_activities on gpu-task-queue. Bottleneck is vLLM, not the proxy — raise to push more vLLM throughput."
+  description = "Per-instance max_concurrent_activities on batch-gpu-tq. Bottleneck is vLLM, not the proxy — raise to push more vLLM throughput."
   type        = number
   default     = 8
 }

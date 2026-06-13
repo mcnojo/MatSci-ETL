@@ -219,7 +219,7 @@ resource "aws_launch_template" "cpu_queue" {
   }
 }
 
-# gpu-task-queue worker: HTTP client to vLLM, no local GPU.
+# batch-gpu-tq worker: HTTP client to vLLM, no local GPU.
 resource "aws_launch_template" "gpu_queue" {
   name          = "${var.name_prefix}-gpu-queue-lt"
   image_id      = data.aws_ami.al2023_x86.id

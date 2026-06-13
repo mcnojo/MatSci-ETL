@@ -323,13 +323,19 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
     )
 
 
-# Registry
-
-activities = [
+# Registry — split by activity lane so workers register only what their
+# task queue legitimately serves. Mis-routed activities then fail fast
+# ("no handler") rather than running silently on the wrong worker class.
+CPU_ACTIVITIES = [
     load_pages_activity,
     extract_assets_activity,
     assign_elements_activity,
     finalize_activity,
+]
+
+GPU_ACTIVITIES = [
     llm_text_call_activity,
     chandra_vision_call_activity,
 ]
+
+activities = CPU_ACTIVITIES + GPU_ACTIVITIES

@@ -18,7 +18,7 @@ import click
 from rich.console import Console
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from prod.live.workflows.models import ProcessPdfWorkflowInput, ProcessPdfWorkflowOutput
-from shared.temporal.task_queues import CPU_TASK_QUEUE, WORKFLOW_EXECUTION_TIMEOUT
+from shared.temporal.task_queues import LIVE_CPU_TQ, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import load_pipeline_config
 from shared.temporal.client import connect_temporal
 
@@ -52,7 +52,7 @@ async def _run(
                 skip_enrichment=skip_enrichment,
             ),
             id=workflow_id,
-            task_queue=CPU_TASK_QUEUE,
+            task_queue=LIVE_CPU_TQ,
             execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
         )
         console.print(f"  Started [cyan]{document_id}[/cyan] -> {workflow_id}")

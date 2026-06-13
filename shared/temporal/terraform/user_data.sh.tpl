@@ -10,6 +10,7 @@ INSTALL_DIR=/opt/ocr-benchmarking
 SECRETS_DIR=/etc/ocr-benchmarking
 SECRETS_FILE="$SECRETS_DIR/tree_llm.env"
 WORKER_LOG=/var/log/ocr-worker.log
+BATCH_CONTROL_LOG=/var/log/ocr-batch-control-worker.log
 INGESTION_LOG=/var/log/ocr-ingestion.log
 DOCKER_COMPOSE_VERSION=v2.29.7
 
@@ -69,6 +70,7 @@ chmod 600 "$SECRETS_FILE"
 
 echo "[bootstrap] log files"
 install -m 0644 /dev/null "$WORKER_LOG"
+install -m 0644 /dev/null "$BATCH_CONTROL_LOG"
 install -m 0644 /dev/null "$INGESTION_LOG"
 
 echo "[bootstrap] cloudwatch agent config"
@@ -104,6 +106,11 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
           "metrics_collection_interval": 10
         },
         {
+          "pattern": "prod.batch.worker",
+          "measurement": ["cpu_usage", "memory_rss"],
+          "metrics_collection_interval": 10
+        },
+        {
           "pattern": "prod.live.ingestion.consumer",
           "measurement": ["cpu_usage", "memory_rss"],
           "metrics_collection_interval": 10
@@ -119,6 +126,12 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
             "file_path": "$WORKER_LOG",
             "log_group_name": "${log_group_name}",
             "log_stream_name": "{instance_id}/ocr-worker",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "$BATCH_CONTROL_LOG",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "{instance_id}/ocr-batch-control-worker",
             "timezone": "UTC"
           },
           {
@@ -166,10 +179,10 @@ ExecStop=/usr/bin/docker compose down
 WantedBy=multi-user.target
 UNIT_EOF
 
-echo "[bootstrap] systemd: ocr-worker"
+echo "[bootstrap] systemd: ocr-worker (live motif)"
 cat > /etc/systemd/system/ocr-worker.service <<UNIT_EOF
 [Unit]
-Description=OCR live worker (cpu + gpu task queues)
+Description=OCR live worker (live-cpu + live-gpu task queues)
 After=ocr-temporal-stack.service
 Requires=ocr-temporal-stack.service
 
@@ -190,7 +203,6 @@ Environment=OPENBLAS_NUM_THREADS=${torch_num_threads}
 ExecStart=$INSTALL_DIR/env/bin/python -m prod.live.worker \\
     --temporal-address localhost:7233 \\
     --temporal-namespace default \\
-    --queues cpu,gpu \\
     --max-concurrent-cpu ${max_concurrent_cpu} \\
     --max-concurrent-gpu ${max_concurrent_gpu}
 Restart=always
@@ -199,6 +211,41 @@ TimeoutStopSec=120
 KillSignal=SIGTERM
 StandardOutput=append:$WORKER_LOG
 StandardError=append:$WORKER_LOG
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+# Batch control plane lives here because scale_fleet_up_activity must execute
+# BEFORE the batch ASGs exist. Polls batch-control-tq only — per-PDF work
+# (batch-cpu-tq, batch-gpu-tq) stays on the ephemeral batch ASG workers.
+echo "[bootstrap] systemd: ocr-batch-control-worker"
+cat > /etc/systemd/system/ocr-batch-control-worker.service <<UNIT_EOF
+[Unit]
+Description=OCR batch control worker (batch-control-tq)
+After=ocr-temporal-stack.service
+Requires=ocr-temporal-stack.service
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$SECRETS_FILE
+Environment=PYTHONUNBUFFERED=1
+Environment=AWS_REGION=${aws_region}
+Environment=AWS_DEFAULT_REGION=${aws_region}
+Environment=ARTIFACT_BUCKET=${artifact_bucket}
+ExecStart=$INSTALL_DIR/env/bin/python -m prod.batch.worker \\
+    --temporal-address localhost:7233 \\
+    --temporal-namespace default \\
+    --queues control \\
+    --max-concurrent-cpu ${max_concurrent_cpu} \\
+    --max-concurrent-gpu ${max_concurrent_gpu}
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+KillSignal=SIGTERM
+StandardOutput=append:$BATCH_CONTROL_LOG
+StandardError=append:$BATCH_CONTROL_LOG
 
 [Install]
 WantedBy=multi-user.target
@@ -295,6 +342,7 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-temporal-stack
 systemctl enable --now ocr-worker
+systemctl enable --now ocr-batch-control-worker
 # Enable ocr-ingestion; the ExecStartPre fails harmlessly until live/ is applied,
 # then the unit comes up automatically on the next restart tick.
 systemctl enable --now ocr-ingestion || true

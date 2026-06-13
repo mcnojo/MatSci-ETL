@@ -80,7 +80,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
       },
       "procstat": [
         {
-          "pattern": "prod.live.worker",
+          "pattern": "prod.batch.worker",
           "measurement": ["cpu_usage", "memory_rss"],
           "metrics_collection_interval": 10
         }
@@ -136,7 +136,7 @@ Environment=OMP_NUM_THREADS=${torch_num_threads}
 Environment=MKL_NUM_THREADS=${torch_num_threads}
 Environment=TORCH_NUM_THREADS=${torch_num_threads}
 Environment=OPENBLAS_NUM_THREADS=${torch_num_threads}
-ExecStart=$INSTALL_DIR/env/bin/python -m prod.live.worker \\
+ExecStart=$INSTALL_DIR/env/bin/python -m prod.batch.worker \\
     --temporal-address ${temporal_address} \\
     --temporal-namespace ${temporal_namespace} \\
     --queues ${worker_role} \\

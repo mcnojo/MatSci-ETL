@@ -1,14 +1,32 @@
 """Task queue names and shared retry/timeout constants.
 
-cpu-task-queue: PyMuPDF, tree building, regex, formatting, S3 IO, finalize.
-gpu-task-queue: text LLM (tree builder) + chandra OCR.
+Queue layout is motif-scoped (live vs batch) AND lane-scoped (control / cpu /
+gpu). The split is the load-balancing barrier that keeps the always-on
+cpu-pipeline-01 from siphoning work meant for ephemeral batch ASG instances —
+which run different code (boot-time git clone) and different IAM/SG context.
+
+  batch-control-tq  cpu-pipeline-01      orchestration only: BatchRunWorkflow
+                                         body + scale_fleet + await_pollers
+                                         + fetch_manifest + build_report.
+                                         MUST be polled by an always-on worker
+                                         because scale_fleet_up runs BEFORE
+                                         the batch ASGs exist.
+  batch-cpu-tq      batch CPU ASG        ShardWorkflow + per-PDF CPU activities.
+  batch-gpu-tq      batch GPU ASG        LLM/Chandra calls during a batch.
+
+  live-cpu-tq       cpu-pipeline-01      ProcessPdfWorkflow + per-PDF CPU.
+  live-gpu-tq       cpu-pipeline-01      LLM/Chandra calls for live (HTTP-only
+                                         from cpu-pipeline-01 to vLLM).
 """
 from datetime import timedelta
 
 from temporalio.common import RetryPolicy
 
-CPU_TASK_QUEUE = "cpu-task-queue"
-GPU_TASK_QUEUE = "gpu-task-queue"
+BATCH_CONTROL_TQ = "batch-control-tq"
+BATCH_CPU_TQ = "batch-cpu-tq"
+BATCH_GPU_TQ = "batch-gpu-tq"
+LIVE_CPU_TQ = "live-cpu-tq"
+LIVE_GPU_TQ = "live-gpu-tq"
 
 # Retry policies
 
