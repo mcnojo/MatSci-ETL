@@ -95,7 +95,7 @@ locals {
 
 resource "aws_security_group" "vllm" {
   name        = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}-sg"
-  description = "vLLM serving SG for ${local.role_tag}. Egress all; operator + worker ingress attached as standalone rules below."
+  description = "vLLM serving SG for ${local.role_tag}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_id output."
   vpc_id      = data.aws_vpc.selected.id
 
   egress {
@@ -107,11 +107,12 @@ resource "aws_security_group" "vllm" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  # No inline ingress — matches shared/temporal. Standalone rules below are
-  # gated on `length(operator_cidrs) > 0` so the fail-closed default is real:
-  # empty operator_cidrs → no operator rules → SSM Session Manager is the only
-  # access path. External modules attaching their own ingress to this SG won't
-  # be clobbered by re-applies.
+  # No inline ingress. Operator rules below are gated on operator_cidrs so
+  # the fail-closed default is real (empty → SSM-only). Worker-SG ingress
+  # is owned by the consumer module (prod/batch, prod/live) — same pattern
+  # used for shared/temporal — which avoids both apply-order dependencies
+  # (we'd need worker SGs to exist before vllm applies, but up.sh runs vllm
+  # before the workers) and shared/vllm having to enumerate every caller.
 }
 
 resource "aws_security_group_rule" "vision_from_operator" {
@@ -145,30 +146,6 @@ resource "aws_security_group_rule" "ssh_from_operator" {
   protocol          = "tcp"
   cidr_blocks       = var.operator_cidrs
   security_group_id = aws_security_group.vllm.id
-}
-
-# Per-worker-SG ingress on each vLLM port. Scoped at this scope so destroying
-# shared/vllm cleanly removes the rules from the worker SGs.
-resource "aws_security_group_rule" "vllm_from_workers" {
-  for_each                 = toset(var.worker_security_group_ids)
-  description              = "vision vLLM port from worker SG ${each.value}"
-  type                     = "ingress"
-  from_port                = var.vllm_port
-  to_port                  = var.vllm_port
-  protocol                 = "tcp"
-  source_security_group_id = each.value
-  security_group_id        = aws_security_group.vllm.id
-}
-
-resource "aws_security_group_rule" "tree_llm_from_workers" {
-  for_each                 = toset(var.worker_security_group_ids)
-  description              = "tree_llm vLLM port from worker SG ${each.value}"
-  type                     = "ingress"
-  from_port                = var.tree_llm_port
-  to_port                  = var.tree_llm_port
-  protocol                 = "tcp"
-  source_security_group_id = each.value
-  security_group_id        = aws_security_group.vllm.id
 }
 
 data "aws_iam_policy_document" "ec2_assume" {

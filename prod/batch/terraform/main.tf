@@ -35,6 +35,20 @@ data "terraform_remote_state" "shared_temporal" {
   }
 }
 
+# shared/vllm owns the prod vLLM box's SG. We read its ID + ports to attach a
+# worker-SG ingress rule so batch workers can reach the vision (8004) and
+# tree_llm (8005) units via the private IP path inside the VPC.
+data "terraform_remote_state" "shared_vllm" {
+  backend = "s3"
+  config = {
+    bucket         = var.state_bucket
+    key            = "shared/vllm/terraform.tfstate"
+    region         = var.state_region
+    dynamodb_table = var.state_lock_table
+    encrypt        = true
+  }
+}
+
 data "aws_vpc" "selected" {
   id      = var.vpc_id
   default = var.vpc_id == null ? true : null
@@ -71,6 +85,11 @@ locals {
   temporal_address               = "${data.terraform_remote_state.shared_temporal.outputs.cpu_pipeline_private_ip}:7233"
   bucket_arn                     = "arn:${data.aws_partition.current.partition}:s3:::${local.artifact_bucket}"
   batch_report_root              = "s3://${local.artifact_bucket}"
+
+  # shared/vllm SG + ports for the cross-module ingress rules below.
+  vllm_security_group_id = data.terraform_remote_state.shared_vllm.outputs.security_group_id
+  vllm_port              = data.terraform_remote_state.shared_vllm.outputs.vllm_port
+  tree_llm_port          = data.terraform_remote_state.shared_vllm.outputs.tree_llm_port
 
   cpu_queue_asg_name = "${var.name_prefix}-cpu-queue"
   gpu_queue_asg_name = "${var.name_prefix}-gpu-queue"
@@ -118,6 +137,28 @@ resource "aws_security_group_rule" "temporal_from_workers" {
   protocol                 = "tcp"
   source_security_group_id = aws_security_group.batch_worker.id
   security_group_id        = local.cpu_pipeline_security_group_id
+}
+
+# Worker → vLLM ingress. Workers route to vLLM via private IP (user_data sets
+# OCR_VLLM_PREFER_PRIVATE_IP=1); without these rules the connection times out.
+resource "aws_security_group_rule" "vllm_vision_from_workers" {
+  description              = "Batch workers to vision vLLM port"
+  type                     = "ingress"
+  from_port                = local.vllm_port
+  to_port                  = local.vllm_port
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.batch_worker.id
+  security_group_id        = local.vllm_security_group_id
+}
+
+resource "aws_security_group_rule" "vllm_tree_llm_from_workers" {
+  description              = "Batch workers to tree_llm vLLM port"
+  type                     = "ingress"
+  from_port                = local.tree_llm_port
+  to_port                  = local.tree_llm_port
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.batch_worker.id
+  security_group_id        = local.vllm_security_group_id
 }
 
 resource "aws_sqs_queue" "lifecycle_events" {

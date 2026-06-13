@@ -143,13 +143,7 @@ variable "availability_zone" {
 }
 
 variable "operator_cidrs" {
-  description = "CIDRs allowed to reach the vLLM ports. Empty = no operator ingress (fail-closed); in-VPC workers still reach vLLM via worker_security_group_ids. bin/<motif>/up.sh and bin/dev/up_vllm.sh auto-detect the operator's public IP via checkip.amazonaws.com when this is not supplied — direct `terraform apply` callers must pass it explicitly."
-  type        = list(string)
-  default     = []
-}
-
-variable "worker_security_group_ids" {
-  description = "SGs of in-VPC workers that need to call vLLM. Each gets an ingress rule on the vLLM port. Empty for hybrid local-dev."
+  description = "CIDRs allowed to reach the vLLM ports. Empty = no operator ingress (fail-closed); in-VPC workers reach vLLM via SG-to-SG ingress rules owned by the consumer modules (prod/batch, prod/live). bin/<motif>/up.sh and bin/dev/up_vllm.sh auto-detect the operator's public IP via checkip.amazonaws.com when this is not supplied — direct `terraform apply` callers must pass it explicitly."
   type        = list(string)
   default     = []
 }
