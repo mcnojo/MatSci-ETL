@@ -53,6 +53,11 @@ echo "[bootstrap] venv + editable install (with pipeline-cpu extra)"
 # CPU activities chain, so the heavy stack must be installed.
 python3.11 -m venv "$INSTALL_DIR/env"
 "$INSTALL_DIR/env/bin/pip" install --upgrade pip
+# Pin pip's scratch dir to disk (/var/tmp is plain ext4/xfs on AL2023) so
+# torch + nvidia-* wheel extraction doesn't compete with the tmpfs /tmp
+# (~½×RAM). m7i.xlarge has 8GB tmpfs headroom today; this keeps the install
+# robust if the instance type ever shrinks.
+export TMPDIR=/var/tmp
 "$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR[pipeline-cpu]"
 
 echo "[bootstrap] tree_llm key fetch"

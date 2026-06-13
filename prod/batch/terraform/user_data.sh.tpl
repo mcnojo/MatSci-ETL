@@ -41,6 +41,12 @@ git -C "$INSTALL_DIR" checkout "${repo_ref}"
 echo "[bootstrap] venv + editable install (worker_role=${worker_role})"
 python3.11 -m venv "$INSTALL_DIR/env"
 "$INSTALL_DIR/env/bin/pip" install --upgrade pip
+# Pin pip's scratch dir to disk-backed /var/tmp instead of AL2023's default
+# /tmp (tmpfs at ~50% of RAM). On small-RAM Spot picks (c7i.large, c5.large
+# = 4GB RAM → ~2GB tmpfs) the torch + nvidia-* wheels overflow tmpfs and
+# pip dies with ENOSPC long before the 50GB EBS root is touched. /var/tmp
+# on AL2023 is plain ext4/xfs on the root volume.
+export TMPDIR=/var/tmp
 # CPU role installs the pipeline-cpu extra (torch + cv2 + doclayout) since it
 # registers ProcessPdfWorkflow + the CPU activities. GPU role installs bare
 # base — it only ever runs HTTP activities (no workflow registration here).
