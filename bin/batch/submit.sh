@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Upload a folder of PDFs as a batch.
+# Upload a folder of PDFs as a batch (does NOT start the workflow — that's
+# `python -m prod.batch.cli submit <batch_id>` printed at the end).
 #
 #   bin/batch/submit.sh <folder> [--batch-id ID] [--config-overrides path.json]
 #
@@ -8,8 +9,7 @@
 #   2. Build manifest in memory; validate via BatchManifest.model_validate
 #   3. Upload PDFs to s3://<bucket>/batches/incoming/<batch_id>/pdfs/
 #   4. Upload manifest.json to s3://<bucket>/batches/incoming/<batch_id>/manifest.json
-#      (LAST — this is what triggers the Lambda)
-#   5. Print the Temporal UI URL + expected report URI
+#   5. Print the batch_id and the exact command to start the workflow.
 #
 # Batch ID defaults to <folder-basename>-<utc-yyyymmdd-hhmm> so accidental
 # re-runs don't collide with the previous workflow (which would be rejected
@@ -46,10 +46,10 @@ need terraform
 PYTHON="${REPO_ROOT}/env/bin/python"
 [[ -x "$PYTHON" ]] || { echo "error: venv not found at $PYTHON — run: python3 -m venv env && env/bin/pip install -e ." >&2; exit 1; }
 
-# Guard: batch motif must be up before submitting. The trigger Lambda is the
-# canonical indicator — if it doesn't exist, bin/batch/up.sh hasn't been run.
-_lambda_name=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw batch_trigger_lambda_name 2>/dev/null || true)
-if [[ -z "$_lambda_name" ]] || ! aws lambda get-function --function-name "$_lambda_name" --query 'Configuration.FunctionName' --output text >/dev/null 2>&1; then
+# Guard: batch motif must be up. ASG existence is the canonical indicator —
+# if `terraform output` returns nothing, bin/batch/up.sh hasn't been run.
+_asg_name=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw cpu_queue_asg_name 2>/dev/null || true)
+if [[ -z "$_asg_name" ]]; then
   echo "error: batch motif is not up — run bin/batch/up.sh first" >&2
   exit 1
 fi
@@ -59,8 +59,10 @@ while IFS= read -r -d '' f; do pdfs+=("$f"); done < <(find "$folder" -maxdepth 1
 [[ ${#pdfs[@]} -gt 0 ]] || { echo "no PDFs found in $folder" >&2; exit 1; }
 echo "discovered ${#pdfs[@]} PDFs in $folder"
 
-artifact_bucket=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw artifact_bucket)
-incoming_prefix=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw incoming_prefix 2>/dev/null || echo "batches/incoming/")
+artifact_bucket=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw artifact_bucket)
+# INCOMING_PREFIX is the manifest-layout convention shared with the CLI submit
+# step; sourced from the Python constant so there's exactly one source of truth.
+incoming_prefix=$(PYTHONPATH="$REPO_ROOT" "$PYTHON" -c 'from prod.batch.planner import INCOMING_PREFIX; print(INCOMING_PREFIX)')
 report_root=$(terraform -chdir="$REPO_ROOT/prod/batch/terraform" output -raw batch_report_root 2>/dev/null || true)
 temporal_ui_host=$(terraform -chdir="$REPO_ROOT/shared/temporal/terraform" output -raw cpu_pipeline_public_ip)
 
@@ -124,12 +126,15 @@ for p in "${pdfs[@]}"; do
 done
 
 echo
-echo "uploading manifest LAST (triggers Lambda) → s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
+echo "uploading manifest → s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
 aws s3 cp --only-show-errors "$manifest_path" "s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
 
 # --- report ------------------------------------------------------------------
 echo
-echo "submitted."
+echo "uploaded. start the workflow with:"
+echo
+echo "  python -m prod.batch.cli submit $batch_id"
+echo
 echo "  workflow id  : batch-$batch_id"
 echo "  temporal ui  : http://$temporal_ui_host:8233/namespaces/default/workflows/batch-$batch_id"
 if [[ -n "$report_root" ]]; then

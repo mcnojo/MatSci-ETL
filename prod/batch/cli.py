@@ -29,7 +29,12 @@ from shared.config_loader import load_pipeline_config
 from shared.temporal.client import connect_temporal
 
 from .artifacts import read_manifest
-from .planner import DEFAULT_SHARD_SIZE, batch_workflow_id, shard_manifest
+from .planner import (
+    DEFAULT_SHARD_SIZE,
+    batch_workflow_id,
+    manifest_uri as default_manifest_uri,
+    shard_manifest,
+)
 from .workflows.batch_run import BatchRunWorkflow
 from .workflows.models import BatchRunInput, BatchRunOutput
 
@@ -88,12 +93,12 @@ def _load_yaml(path: str | None) -> dict:
 
 # Fleet wiring is sourced from prod/batch terraform outputs — terraform owns
 # the ASG names, scale-up target (max_size), and worker registration timeout.
-# Same authoritative values the Lambda gets via terraform-templated env vars.
 _REQUIRED_FLEET_OUTPUTS = (
     "region", "cpu_queue_asg_name", "gpu_queue_asg_name",
     "cpu_queue_max_size", "gpu_queue_max_size",
     "worker_registration_timeout_s",
 )
+_ARTIFACT_BUCKET_OUTPUT = "artifact_bucket"
 
 
 def _terraform_outputs(module_dir: str) -> dict:
@@ -252,8 +257,11 @@ def _print_result(result: BatchRunOutput) -> None:
 
 
 @cli.command()
-@click.option("--manifest", "manifest_uri", required=True,
-              help="s3://... URI or local path to a manifest JSON file.")
+@click.argument("batch_id")
+@click.option("--manifest-uri", "manifest_uri_override", default=None,
+              help="Override the derived manifest URI. Default: "
+                   "s3://<artifact_bucket>/batches/incoming/<batch_id>/manifest.json "
+                   "(bucket read from prod/batch terraform output).")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Print the shard plan without submitting.")
 @click.option("--wait/--no-wait", default=True, show_default=True,
@@ -264,22 +272,52 @@ def _print_result(result: BatchRunOutput) -> None:
                    "(local dev / debug).")
 @click.pass_context
 def submit(
-    ctx: click.Context, manifest_uri: str,
+    ctx: click.Context, batch_id: str, manifest_uri_override: str | None,
     dry_run: bool, wait: bool, manage_fleet: bool,
 ) -> None:
-    """Start a BatchRunWorkflow (workflow owns scale-up → fan-out → report → scale-down)."""
+    """Start a BatchRunWorkflow for an already-uploaded batch (workflow owns
+    scale-up → fan-out → report → scale-down).
+
+    BATCH_ID is the identifier printed by `bin/batch/submit.sh` after upload.
+    """
     asyncio.run(_submit(
-        ctx.obj, manifest_uri,
+        ctx.obj, batch_id, manifest_uri_override,
         dry_run=dry_run, wait=wait, manage_fleet=manage_fleet,
     ))
 
 
+def _resolve_manifest_uri(
+    batch_id: str, override: str | None, terraform_dir: str,
+) -> str:
+    if override:
+        return override
+    outputs = _terraform_outputs(terraform_dir)
+    bucket = outputs.get(_ARTIFACT_BUCKET_OUTPUT)
+    if not bucket:
+        raise click.ClickException(
+            f"prod/batch terraform output {_ARTIFACT_BUCKET_OUTPUT!r} is "
+            f"missing — cannot derive manifest URI. Pass --manifest-uri "
+            f"s3://… to override, or bring the batch motif up "
+            f"(bin/batch/up.sh)."
+        )
+    return default_manifest_uri(bucket, batch_id)
+
+
 async def _submit(
-    ctx_obj: dict, manifest_uri: str, *,
+    ctx_obj: dict, batch_id: str, manifest_uri_override: str | None, *,
     dry_run: bool, wait: bool, manage_fleet: bool,
 ) -> None:
     batch_cfg = ctx_obj["batch_cfg"]
+    manifest_uri = _resolve_manifest_uri(
+        batch_id, manifest_uri_override, ctx_obj["terraform_dir"],
+    )
+    console.print(f"Manifest URI: [cyan]{manifest_uri}[/cyan]")
     manifest = read_manifest(manifest_uri)
+    if manifest.batch_id != batch_id:
+        raise click.ClickException(
+            f"batch_id mismatch — argument was {batch_id!r} but manifest "
+            f"body has {manifest.batch_id!r}. Refusing to submit."
+        )
     shard_size = batch_cfg.get("planner", {}).get("shard_size", DEFAULT_SHARD_SIZE)
     _print_plan(manifest, shard_size)
     if manage_fleet:

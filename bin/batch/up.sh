@@ -3,7 +3,7 @@
 #
 #   shared/temporal apply  →  cpu-pipeline-01 (Temporal, worker, ingestion unit)
 #   shared/vllm     apply  →  vLLM box (env_tag=prod)
-#   batch           apply  →  ASGs (paused at 0) + Lambda trigger + S3 notification
+#   batch           apply  →  ASGs paused at 0 (workflow scales them up on submit)
 #   wait_health            →  poll Temporal :7233 + vLLM /health
 #
 # Idempotent: re-runs are no-ops if nothing changed.
@@ -94,9 +94,6 @@ step "shared/vllm init + apply (env_tag=prod)"
 "$TF" shared/vllm apply -auto-approve -input=false -var "env_tag=prod" \
     ${vllm_args[@]+"${vllm_args[@]}"} \
     ${extra_args[@]+"${extra_args[@]}"}
-
-step "build batch_trigger Lambda bundle"
-"$REPO_ROOT/prod/batch/lambdas/batch_trigger/build.sh"
 
 step "batch init + apply"
 "$TF" batch init -input=false -upgrade

@@ -23,7 +23,5 @@ concurrency:
 
 # Fleet wiring (region, ASG names, scale-up target = max_size, worker
 # registration timeout) is read from prod/batch terraform outputs at submit
-# time — terraform is the single source of truth. Same values the Lambda
-# trigger gets via terraform-templated env vars in lambda.tf. Pass
-# --no-manage-fleet to cli submit to skip the lookup and run against an
-# externally-managed fleet.
+# time — terraform is the single source of truth. Pass --no-manage-fleet to
+# cli submit to skip the lookup and run against an externally-managed fleet.

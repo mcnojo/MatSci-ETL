@@ -7,14 +7,11 @@
 #                                dependents in the batch motif, so getting
 #                                rid of it before the slow steps is the
 #                                cheapest possible teardown.
-#   batch           destroy   →  Lambda + S3 notification + ASGs + IAM + DLQs.
-#                                The Lambda's VPC ENIs take 15-25 min to
-#                                detach — that wait blocks the SG destroy.
-#                                Run in parallel with shared/temporal where
-#                                possible, except for the cross-module SG
-#                                rules `temporal_from_trigger_lambda` /
-#                                `temporal_from_workers` which target the
-#                                cpu_pipeline SG. Sequential.
+#   batch           destroy   →  ASGs + worker SG + IAM + lifecycle SQS.
+#                                Sequential before shared/temporal because of
+#                                the cross-module `temporal_from_workers` SG
+#                                rule that targets the cpu_pipeline SG. Fast
+#                                (no Lambda VPC ENIs to wait on).
 #   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
 #                                S3 VPC endpoint. SSM tree_llm keys are NOT
 #                                here anymore — they live in shared/platform
@@ -47,7 +44,7 @@ step() { printf "\n=== %s ===\n" "$*"; }
 step "shared/vllm destroy (kill GPU first)"
 "$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
 
-step "batch destroy (Lambda ENI cleanup takes 15-25 min)"
+step "batch destroy"
 "$TF" batch destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
 step "shared/temporal destroy"

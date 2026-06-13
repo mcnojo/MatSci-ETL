@@ -21,14 +21,18 @@ bin/tf.sh batch plan
 bin/tf.sh batch apply
 ```
 
-## What gets created (~20 resources)
+## What gets created (~15 resources)
 
-- `ocr-batch-cpu-queue` + `ocr-batch-gpu-queue` ASGs — Spot, `min=0`, `max=2`, `capacity-optimized` across 3 instance families × all default-VPC AZs. `capacity_rebalance=true` so replacements overlap drains. **No scaling policy** — `cli run` writes `desired_capacity` per batch and zeroes it at end (`cli teardown-fleet` for force-stop).
+- `ocr-batch-cpu-queue` + `ocr-batch-gpu-queue` ASGs — Spot, `min=0`, `max=2`, `capacity-optimized` across 3 instance families × all default-VPC AZs. `capacity_rebalance=true` so replacements overlap drains. **No scaling policy** — `BatchRunWorkflow.scale_fleet_up_activity` writes `desired_capacity` per batch and zeroes it in the workflow's finally block.
 - Two launch templates on the latest AL2023 x86 AMI, IMDSv2-only, encrypted 30GB gp3. Systemd unit caps torch/OMP/MKL threads at `torch_num_threads` (default 2) so concurrent doclayout-yolo calls don't oversubscribe vCPUs.
 - Worker SG — no inbound (Session Manager); one ingress rule on `cpu_pipeline_security_group_id:7233` from the worker SG.
 - SQS lifecycle queue + termination hooks. Default action `CONTINUE` — unsubscribed queue is harmless.
-- IAM: worker (S3 on bucket, EC2 describe for vLLM tag lookup, SQS drain, SSM, scoped Logs); lifecycle publisher (ASG → SQS).
+- IAM: worker (S3 on bucket, EC2 describe for vLLM tag lookup, SQS drain, SSM, scoped Logs); lifecycle publisher (ASG → SQS); cross-module attachment granting cpu-pipeline-01's role `autoscaling:SetDesiredCapacity` on these ASGs.
 - CloudWatch: log group only. No custom metrics, no target tracking.
+
+There is no S3 → Lambda auto-trigger; submission is explicit via
+`bin/batch/submit.sh` + `python -m prod.batch.cli submit <batch_id>`. The
+trade is operator visibility for fast teardown (no Lambda VPC ENIs).
 
 ## Dependencies (must land before apply)
 

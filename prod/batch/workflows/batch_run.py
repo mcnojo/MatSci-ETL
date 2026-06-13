@@ -1,8 +1,7 @@
 """BatchRunWorkflow — top-level parent for a batch run.
 
-The workflow owns the entire batch lifecycle. A single workflow start (from
-`cli submit`, from the trigger Lambda, or anywhere else) is sufficient — no
-CLI babysitting.
+The workflow owns the entire batch lifecycle. A single `cli submit` is
+sufficient — no CLI babysitting.
 
 Flow (when input.manages_fleet):
   1. fetch_manifest_activity reads the manifest from S3 (or local) and

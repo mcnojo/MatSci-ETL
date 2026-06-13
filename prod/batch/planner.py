@@ -1,11 +1,23 @@
 """Manifest sharding: pure slicing keeping each shard's event history under
 Temporal's 50MB/~50k-event soft limit per workflow.
+
+Also owns the layout convention for batch manifests in S3 — single source of
+truth shared by the uploader (bin/batch/submit.sh) and the workflow starter
+(prod/batch/cli.py).
 """
 
 from .models import BatchItem, BatchManifest
 
 
 DEFAULT_SHARD_SIZE = 50
+
+# Manifest layout: s3://<artifact_bucket>/<INCOMING_PREFIX><batch_id>/manifest.json
+# PDFs:           s3://<artifact_bucket>/<INCOMING_PREFIX><batch_id>/pdfs/<doc_id>.pdf
+INCOMING_PREFIX = "batches/incoming/"
+
+
+def manifest_uri(artifact_bucket: str, batch_id: str) -> str:
+    return f"s3://{artifact_bucket}/{INCOMING_PREFIX}{batch_id}/manifest.json"
 
 
 def shard_manifest(

@@ -45,28 +45,32 @@ prod/batch/
 
 ## CLI
 
+`bin/batch/submit.sh <folder>` uploads PDFs + manifest and prints the
+`batch_id` plus the exact command to start the workflow. The CLI start step
+is one line:
+
 ```bash
 # Start a batch — workflow owns the full lifecycle (scale up, await pollers,
 # fan out, write reports, scale down). Default waits for completion.
-python -m prod.batch.cli submit --manifest s3://chem-lit-artifacts/batches/q2-corpus-a/manifest.json
+python -m prod.batch.cli submit <batch_id>
+
+# Override the derived manifest URI (default:
+# s3://<artifact_bucket>/batches/incoming/<batch_id>/manifest.json — bucket
+# read from prod/batch terraform output).
+python -m prod.batch.cli submit <batch_id> --manifest-uri /path/to/manifest.json
 
 # Submit against a pre-existing fleet (local dev / debug runs).
-python -m prod.batch.cli submit --manifest /path/to/manifest.json --no-manage-fleet
+python -m prod.batch.cli submit <batch_id> --no-manage-fleet
 
 # Inspect
 python -m prod.batch.cli status <batch_id>
-python -m prod.batch.cli report <batch_id>     # re-runs the rich report build
-
-# Cancel a running batch (propagates to children; finally block scales down)
 python -m prod.batch.cli cancel <batch_id>
-
-# Diagnostic: wait until activity pollers register on the named queues
 python -m prod.batch.cli wait-for-workers
 ```
 
-The Phase D Lambda is the production trigger (S3 PUT on manifest.json fires
-it). `cli submit` is kept for power users / debug runs where bypassing the
-Lambda is useful.
+The CLI is the only entry point — there is no S3 → Lambda auto-trigger.
+Submission is explicit so teardown stays fast (no Lambda VPC ENIs to wait
+on during `down.sh`).
 
 ## Testing
 
@@ -97,6 +101,5 @@ unavailable.
 ## Phasing
 
 See `AWS_DEPLOYMENT_PLAN.md` at the repo root for the deployment plan.
-Phase C (this commit) moves the batch lifecycle into `BatchRunWorkflow`.
-Phase D adds the Lambda trigger; Phase E ships the operator-facing
-`bin/` scripts.
+Phase C moves the batch lifecycle into `BatchRunWorkflow`. Phase E ships
+the operator-facing `bin/` scripts.
