@@ -10,7 +10,9 @@ import asyncio
 import base64
 import json
 import os
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 
@@ -19,6 +21,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
+from shared.s3_io import get_bytes
 from shared.vllm.resolve import resolve_vllm_url
 
 _T = TypeVar("_T")
@@ -116,6 +119,25 @@ class FinalizeOutput(BaseModel):
 
 # PyMuPDF helpers (used only by load_pages_activity)
 
+
+@contextmanager
+def _localized_pdf(uri_or_path: str):
+    """Yield a local filesystem path for the PDF.
+
+    Activities receive s3:// URIs from the manifest, but PyMuPDF and
+    AssetExtractor open files by local path. Downloads to a NamedTemporaryFile
+    on the worker, cleaned up on exit. Local paths pass through unchanged so
+    dev/integration runs against on-disk PDFs still work.
+    """
+    if uri_or_path.startswith("s3://"):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+            tmp.write(get_bytes(uri_or_path))
+            tmp.flush()
+            yield tmp.name
+    else:
+        yield uri_or_path
+
+
 def _get_page_tokens(pdf_path: str) -> list[tuple[str, int]]:
     doc = pymupdf.open(pdf_path)
     page_list = []
@@ -153,7 +175,8 @@ def _openai_usage(response) -> tuple[int, int]:
 
 @activity.defn(name="process-pdf_load-pages")
 async def load_pages_activity(input: LoadPagesInput) -> LoadPagesOutput:
-    page_list = _get_page_tokens(input.pdf_path)
+    with _localized_pdf(input.pdf_path) as local_pdf:
+        page_list = _get_page_tokens(local_pdf)
     return LoadPagesOutput(
         page_list=page_list,
         total_pages=len(page_list),
@@ -168,11 +191,12 @@ async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOut
         for p in range(start, end + 1):
             all_pages.add(p)
 
-    extractor = AssetExtractor(input.pdf_path, input.document_id, input.config)
-    try:
-        page_elements = extractor.extract_all_pages(all_pages)
-    finally:
-        extractor.close()
+    with _localized_pdf(input.pdf_path) as local_pdf:
+        extractor = AssetExtractor(local_pdf, input.document_id, input.config)
+        try:
+            page_elements = extractor.extract_all_pages(all_pages)
+        finally:
+            extractor.close()
 
     total = sum(len(v) for v in page_elements.values())
     by_type: dict[str, int] = {}
