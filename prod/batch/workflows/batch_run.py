@@ -91,7 +91,12 @@ with workflow.unsafe.imports_passed_through():
 # longest legitimate wait in the lifecycle. Teardown gets a generous window so
 # transient AWS hiccups don't drop us into a non-zero fleet on cancellation.
 _SCALE_UP_TIMEOUT = timedelta(minutes=2)
-_SCALE_DOWN_TIMEOUT = timedelta(minutes=5)
+# scale_fleet_down_activity now waits for AWS to fully remove instances from
+# the ASG (closes the race where a fast resubmit rescues about-to-die boxes
+# running stale code). Worst case: lifecycle_hook_heartbeat_s (120s drain) +
+# AWS termination (~30s) per parallel pool, plus boto retries. 15 min gives
+# comfortable headroom even under a stuck-shutdown scenario.
+_SCALE_DOWN_TIMEOUT = timedelta(minutes=15)
 _AWAIT_POLLERS_BUFFER = timedelta(minutes=2)        # added to caller's timeout_s
 _BUILD_REPORT_TIMEOUT = timedelta(minutes=15)
 
