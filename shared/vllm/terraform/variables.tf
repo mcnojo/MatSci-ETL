@@ -89,9 +89,9 @@ variable "tree_llm_port" {
 }
 
 variable "tree_llm_hf_model_id" {
-  description = "Hugging Face model ID for the tree_llm `vllm serve` unit. Default google/gemma-4-E4B: 8B total / 4.5B effective params via Per-Layer Embeddings, BF16 ~16GB on disk (the laptop ollama `gemma4:e4b` is the int4-quantized variant — different footprint). No HF gating."
+  description = "Hugging Face model ID for the tree_llm `vllm serve` unit. Default google/gemma-4-E4B-it: 8B total / 4.5B effective params via Per-Layer Embeddings, BF16 ~16GB on disk (the laptop ollama `gemma4:e4b` is the int4-quantized variant — different footprint). The `-it` (instruction-tuned) variant ships a chat template in its tokenizer; the base `google/gemma-4-E4B` does not, and transformers ≥4.44 refuses /v1/chat/completions on tokenizers without one. No HF gating."
   type        = string
-  default     = "google/gemma-4-E4B"
+  default     = "google/gemma-4-E4B-it"
 }
 
 variable "tree_llm_extra_args" {
