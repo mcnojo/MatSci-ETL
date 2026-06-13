@@ -12,6 +12,7 @@ from rich.console import Console
 
 from shared.s3_io import get_bytes
 from shared.temporal.client import connect_temporal
+from shared.temporal.operator_address import resolve_operator_address
 
 from .builder import (
     build_batch_report,
@@ -47,7 +48,10 @@ def _load_batch_cfg(path: str) -> dict:
 
 
 @click.group()
-@click.option("--temporal-address", default="localhost:7233", show_default=True)
+@click.option("--temporal-address", default=None,
+              help="Temporal gRPC endpoint. Resolution order: flag → "
+                   "TEMPORAL_ADDRESS env → shared/temporal terraform output "
+                   "cpu_pipeline_public_ip:7233 → localhost:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--batch-config", default="prod/batch/config/batch_config.yaml",
               show_default=True,
@@ -57,14 +61,17 @@ def _load_batch_cfg(path: str) -> dict:
 @click.pass_context
 def cli(
     ctx: click.Context,
-    temporal_address: str,
+    temporal_address: str | None,
     temporal_namespace: str,
     batch_config: str,
     region_default: str,
 ) -> None:
     """Build batch / live / comparison reports."""
     ctx.ensure_object(dict)
-    ctx.obj["temporal_address"] = temporal_address
+    resolved_address, source = resolve_operator_address(temporal_address)
+    if source != "flag":
+        console.print(f"[dim]Temporal address: {resolved_address} (from {source})[/dim]")
+    ctx.obj["temporal_address"] = resolved_address
     ctx.obj["temporal_namespace"] = temporal_namespace
     ctx.obj["batch_config"] = batch_config
     batch_cfg = _load_batch_cfg(batch_config) if Path(batch_config).exists() else {}

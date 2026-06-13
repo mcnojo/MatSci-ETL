@@ -27,6 +27,7 @@ from shared.temporal.task_queues import (
 )
 from shared.config_loader import load_pipeline_config
 from shared.temporal.client import connect_temporal
+from shared.temporal.operator_address import resolve_operator_address
 
 from .artifacts import read_manifest
 from .planner import (
@@ -51,7 +52,10 @@ _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
               default="prod/batch/config/batch_config.yaml", show_default=True)
 @click.option("--pipeline-config", "pipeline_config_path",
               default="etl/config/pipeline_config.yaml", show_default=True)
-@click.option("--temporal-address", default="localhost:7233", show_default=True)
+@click.option("--temporal-address", default=None,
+              help="Temporal gRPC endpoint. Resolution order: flag → "
+                   "TEMPORAL_ADDRESS env → shared/temporal terraform output "
+                   "cpu_pipeline_public_ip:7233 → localhost:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--terraform-dir", "terraform_dir",
               default=_DEFAULT_BATCH_TF_DIR, show_default=True,
@@ -63,7 +67,7 @@ def cli(
     ctx: click.Context,
     config_path: str,
     pipeline_config_path: str,
-    temporal_address: str,
+    temporal_address: str | None,
     temporal_namespace: str,
     terraform_dir: str,
     verbose: bool,
@@ -80,7 +84,10 @@ def cli(
     ctx.ensure_object(dict)
     ctx.obj["batch_cfg"] = _load_yaml(config_path)
     ctx.obj["pipeline_config_path"] = pipeline_config_path
-    ctx.obj["temporal_address"] = temporal_address
+    resolved_address, source = resolve_operator_address(temporal_address)
+    if source != "flag":
+        console.print(f"[dim]Temporal address: {resolved_address} (from {source})[/dim]")
+    ctx.obj["temporal_address"] = resolved_address
     ctx.obj["temporal_namespace"] = temporal_namespace
     ctx.obj["terraform_dir"] = terraform_dir
 
