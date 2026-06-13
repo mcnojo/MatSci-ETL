@@ -196,7 +196,7 @@ resource "aws_launch_template" "cpu_queue" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = 30
+      volume_size           = var.root_volume_gb
       volume_type           = "gp3"
       delete_on_termination = true
       encrypted             = true
@@ -243,7 +243,7 @@ resource "aws_launch_template" "gpu_queue" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = 30
+      volume_size           = var.root_volume_gb
       volume_type           = "gp3"
       delete_on_termination = true
       encrypted             = true

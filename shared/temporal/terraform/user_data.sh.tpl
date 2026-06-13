@@ -15,11 +15,12 @@ INGESTION_LOG=/var/log/ocr-ingestion.log
 DOCKER_COMPOSE_VERSION=v2.29.7
 
 echo "[bootstrap] dnf install"
-# libxcb + mesa-libGL: opencv-python (transitive dep via doclayout-yolo)
-# requires libxcb.so.1 + libGL.so.1 even when used headlessly. AL2023 base
-# AMI ships neither, so the import fails and the worker crash-loops without
-# them. opencv-python-headless avoids the deps but pip resolves both wheels
-# (doclayout-yolo pins regular) and binary collision on cv2/ is non-deterministic.
+# libxcb + mesa-libGL: opencv-python (pulled transitively by camelot[cv] /
+# doclayout-yolo) loads libxcb.so.1 + libGL.so.1 at `import cv2` even when
+# invoked headlessly. AL2023 base AMI ships neither. cpu-pipeline-01 runs
+# both the live worker (registers ProcessPdfWorkflow) and the batch control
+# worker (registers BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow),
+# so it always loads the CPU activities chain and needs these libs.
 dnf -y update
 dnf -y install \
     git \
@@ -47,10 +48,12 @@ echo "[bootstrap] clone ${repo_url} @ ${repo_ref}"
 git clone "${repo_url}" "$INSTALL_DIR"
 git -C "$INSTALL_DIR" checkout "${repo_ref}"
 
-echo "[bootstrap] venv + editable install"
+echo "[bootstrap] venv + editable install (with pipeline-cpu extra)"
+# Both workers on this box register workflows that transitively import the
+# CPU activities chain, so the heavy stack must be installed.
 python3.11 -m venv "$INSTALL_DIR/env"
 "$INSTALL_DIR/env/bin/pip" install --upgrade pip
-"$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR"
+"$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR[pipeline-cpu]"
 
 echo "[bootstrap] tree_llm key fetch"
 mkdir -p "$SECRETS_DIR"

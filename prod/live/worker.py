@@ -22,7 +22,8 @@ import click
 import yaml
 from temporalio.worker import Worker
 
-from etl.pipeline.activities import CPU_ACTIVITIES, GPU_ACTIVITIES
+from etl.pipeline.cpu_activities import CPU_ACTIVITIES
+from etl.pipeline.gpu_activities import GPU_ACTIVITIES
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from shared.temporal.task_queues import (
     LIVE_CPU_TQ,

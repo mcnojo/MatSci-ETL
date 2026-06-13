@@ -117,10 +117,16 @@ variable "lifecycle_hook_heartbeat_s" {
   default     = 120
 }
 
-variable "worker_registration_timeout_s" {
-  description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity. Plumbed into the CLI via terraform outputs."
+variable "root_volume_gb" {
+  description = "Root EBS volume size. Must fit AL2023 base + dnf cache + pip install of torch + nvidia-* CUDA wheels (~3-4GB combined via doclayout-yolo's torch dep) + opencv-python-headless + transformers. 30GB ran out at install time; 50GB leaves headroom over the ~12GB peak observed."
   type        = number
-  default     = 600
+  default     = 50
+}
+
+variable "worker_registration_timeout_s" {
+  description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity. Plumbed into the CLI via terraform outputs. Cold-start budget: spot fulfill (~30s) + dnf update + install (~3 min) + pip install heavy CUDA wheels (~3-4 min) + worker boot (~15s). 40 min ceiling absorbs Spot variability, slow PyPI tail, and headroom for vLLM model swap on the GPU box (chandra → gemma)."
+  type        = number
+  default     = 2400
 }
 
 # Remote-state coordinates — defaults match shared/terraform/_backend.hcl.

@@ -9,7 +9,7 @@ import asyncio
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
-from etl.pipeline.activities import _await_with_heartbeats
+from etl.pipeline.heartbeat import await_with_heartbeats
 
 
 # Module-level flags the test inspects after the activity is cancelled
@@ -24,7 +24,7 @@ class HangInput(BaseModel):
 
 @activity.defn(name="hang-with-heartbeats")
 async def hang_with_heartbeats(input: HangInput) -> str:
-    """Long-running activity that drives _await_with_heartbeats.
+    """Long-running activity that drives await_with_heartbeats.
 
     The inner coroutine sleeps for `sleep_for_s` seconds. On cancellation it
     sets `inner_cancelled_event` (proving asyncio cancellation propagated
@@ -43,7 +43,7 @@ async def hang_with_heartbeats(input: HangInput) -> str:
         finally:
             inner_finally_ran_event.set()
 
-    return await _await_with_heartbeats(inner(), interval_s=2.0)
+    return await await_with_heartbeats(inner(), interval_s=2.0)
 
 
 def reset_flags() -> None:

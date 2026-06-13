@@ -7,23 +7,20 @@ name = "ocr-benchmarking"
 version = "0.1.0"
 description = "OCR benchmarking + scientific-paper ETL pipeline."
 requires-python = ">=3.9"
+# Base: deps every motif needs (workflows, HTTP clients, AWS, PDF/image basics).
+# Excludes the heavy CV/ML stack so workers that only serve LLM HTTP traffic
+# (batch GPU ASG) install a slim env — the heavy stack lives in pipeline-cpu.
 dependencies = [
     # ─ PDF / images
     "pymupdf>=1.24.0",
     "pdf2image>=1.17.0",
     "Pillow>=10.0.0",
     "numpy>=1.24.0",
-    "opencv-python-headless>=4.8.0",
 
-    # ─ Layout detection + OCR baseline
-    "doclayout-yolo>=0.0.4",
+    # ─ Layout/OCR baseline used by the CPU pipeline only (the wrappers are
+    # light; the binary deps that make them heavy live in pipeline-cpu).
     "huggingface-hub>=0.20.0",
-    "torch>=2.1.0",
-    "torchvision>=0.16.0",
     "pytesseract>=0.3.10",
-
-    # ─ Table extraction (preprocessing)
-    "camelot-py[cv]>=0.11.0",
     "tabula-py>=2.9.0",
 
     # ─ LLM clients (vLLM/OpenAI-compatible + cloud providers)
@@ -50,7 +47,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# vLLM server. Installed only on the vLLM host.
 serve = ["vllm>=0.11.0"]
+
+# Heavy CV/ML stack pulled by load_pages/extract_assets/assign_elements/finalize
+# (the CPU lane activities) and any worker that registers a workflow which
+# imports them transitively. ~3-4 GB on disk (torch + nvidia-* CUDA wheels) and
+# requires libxcb + libGL system libs for cv2 — keep off the GPU lane host.
+# Hosts that need it: cpu-pipeline-01 (live worker + batch control worker —
+# both register workflows that import the CPU activities chain), the batch
+# CPU ASG, and any local hybrid worker (`--queues control,cpu,gpu`).
+pipeline-cpu = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "doclayout-yolo>=0.0.4",
+    "opencv-python-headless>=4.8.0",
+    "camelot-py[cv]>=0.11.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

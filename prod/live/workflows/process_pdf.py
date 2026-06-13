@@ -23,17 +23,19 @@ from temporalio import workflow
 from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from etl.pipeline.activities import (
+    from etl.pipeline.cpu_activities import (
         AssignElementsInput,
         ExtractAssetsInput,
         FinalizeInput,
         LoadPagesInput,
         assign_elements_activity,
-        chandra_vision_call_activity,
         extract_assets_activity,
         finalize_activity,
-        llm_text_call_activity,
         load_pages_activity,
+    )
+    from etl.pipeline.gpu_activities import (
+        chandra_vision_call_activity,
+        llm_text_call_activity,
     )
     from etl.pipeline.chandra_parser import parse as parse_chandra
     from etl.pipeline.metrics import empty_summary, finalize_summary, merge_call_record

@@ -10,7 +10,8 @@ SECRETS_DIR=/etc/ocr-benchmarking
 SECRETS_FILE="$SECRETS_DIR/tree_llm.env"
 WORKER_LOG=/var/log/ocr-batch-worker.log
 
-echo "[bootstrap] dnf install"
+echo "[bootstrap] dnf install (worker_role=${worker_role})"
+# Base system packages every role needs.
 dnf -y update
 dnf -y install \
     git \
@@ -22,14 +23,32 @@ dnf -y install \
     make \
     amazon-cloudwatch-agent
 
+# Heavy CV stack and its system libs live behind --queues cpu/control. The
+# GPU role registers only HTTP activities (no torch, no cv2, no doclayout) so
+# skipping these saves ~3-4 GB on pip install and removes the libxcb/libGL
+# requirement that previously crashed the GPU box in tmpfs.
+if [ "${worker_role}" = "cpu" ]; then
+    # libxcb + mesa-libGL: opencv-python (pulled transitively by camelot[cv]
+    # and doclayout-yolo) loads libxcb.so.1 + libGL.so.1 at `import cv2` even
+    # when invoked headlessly. AL2023 base AMI ships neither.
+    dnf -y install libxcb mesa-libGL
+fi
+
 echo "[bootstrap] clone ${repo_url} @ ${repo_ref}"
 git clone "${repo_url}" "$INSTALL_DIR"
 git -C "$INSTALL_DIR" checkout "${repo_ref}"
 
-echo "[bootstrap] venv + editable install"
+echo "[bootstrap] venv + editable install (worker_role=${worker_role})"
 python3.11 -m venv "$INSTALL_DIR/env"
 "$INSTALL_DIR/env/bin/pip" install --upgrade pip
-"$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR"
+# CPU role installs the pipeline-cpu extra (torch + cv2 + doclayout) since it
+# registers ProcessPdfWorkflow + the CPU activities. GPU role installs bare
+# base — it only ever runs HTTP activities (no workflow registration here).
+if [ "${worker_role}" = "cpu" ]; then
+    "$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR[pipeline-cpu]"
+else
+    "$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR"
+fi
 
 echo "[bootstrap] tree_llm key fetch"
 mkdir -p "$SECRETS_DIR"
@@ -51,17 +70,18 @@ echo "[bootstrap] worker log file"
 install -m 0644 /dev/null "$WORKER_LOG"
 
 echo "[bootstrap] cloudwatch agent config"
-# $${aws:...} is CWAgent's runtime substitution; doubling the $ escapes it
-# from terraform's templatefile(), which writes a literal $. ${log_group_name}
-# IS terraform's and gets substituted at plan time.
+# \$${aws:...} is CWAgent's runtime substitution: terraform templatefile()
+# turns $$ into a literal $, then bash sees \$ and emits a literal $ — without
+# the backslash, set -u aborts on $${aws:InstanceId} as an unbound variable.
+# ${log_group_name} IS terraform's and gets substituted at plan time.
 cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EOF
 {
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
   "metrics": {
     "namespace": "OCR/Batch/Worker",
     "append_dimensions": {
-      "InstanceId": "$${aws:InstanceId}",
-      "AutoScalingGroupName": "$${aws:AutoScalingGroupName}"
+      "InstanceId": "\$${aws:InstanceId}",
+      "AutoScalingGroupName": "\$${aws:AutoScalingGroupName}"
     },
     "aggregation_dimensions": [["InstanceId"]],
     "metrics_collected": {

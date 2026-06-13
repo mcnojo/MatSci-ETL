@@ -1,4 +1,4 @@
-"""Verify the asyncio.shield + _await_with_heartbeats interaction with
+"""Verify the asyncio.shield + await_with_heartbeats interaction with
 Temporal's activity cancellation.
 
 The concern: when Temporal cancels an activity mid-flight (via the workflow,
