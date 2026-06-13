@@ -2,16 +2,18 @@
 # Tear the batch motif down.
 #
 # Order (and why):
-#   shared/vllm     destroy   →  Kills the GPU box FIRST. It's the expensive
-#                                resource ($$$/hr) and has no cross-module
-#                                dependents in the batch motif, so getting
-#                                rid of it before the slow steps is the
-#                                cheapest possible teardown.
-#   batch           destroy   →  ASGs + worker SG + IAM + lifecycle SQS.
-#                                Sequential before shared/temporal because of
-#                                the cross-module `temporal_from_workers` SG
-#                                rule that targets the cpu_pipeline SG. Fast
-#                                (no Lambda VPC ENIs to wait on).
+#   batch           destroy   →  ASGs + worker SG + IAM + lifecycle SQS + the
+#                                cross-module SG ingress rules attached to
+#                                cpu_pipeline (Temporal :7233) and the vLLM SG.
+#                                MUST precede shared/vllm and shared/temporal
+#                                because both are referenced via remote_state
+#                                outputs — destroying them first leaves batch
+#                                unable to even plan.
+#   shared/vllm     destroy   →  Kills the GPU box. Could go first for the
+#                                cost saving, but batch is fast to destroy
+#                                (no Lambda ENIs to wait on) so the dependency-
+#                                order rule wins over the few cents of g6e
+#                                time.
 #   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
 #                                S3 VPC endpoint. SSM tree_llm keys are NOT
 #                                here anymore — they live in shared/platform
@@ -41,11 +43,11 @@ fi
 
 step() { printf "\n=== %s ===\n" "$*"; }
 
-step "shared/vllm destroy (kill GPU first)"
-"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
-
 step "batch destroy"
 "$TF" batch destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
+
+step "shared/vllm destroy"
+"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
 
 step "shared/temporal destroy"
 "$TF" shared/temporal destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}

@@ -87,9 +87,11 @@ locals {
   batch_report_root              = "s3://${local.artifact_bucket}"
 
   # shared/vllm SG + ports for the cross-module ingress rules below.
-  vllm_security_group_id = data.terraform_remote_state.shared_vllm.outputs.security_group_id
-  vllm_port              = data.terraform_remote_state.shared_vllm.outputs.vllm_port
-  tree_llm_port          = data.terraform_remote_state.shared_vllm.outputs.tree_llm_port
+  # try() so `terraform destroy` still plans when shared/vllm was already
+  # destroyed (out-of-order down). When null, the gated rules below skip.
+  vllm_security_group_id = try(data.terraform_remote_state.shared_vllm.outputs.security_group_id, null)
+  vllm_port              = try(data.terraform_remote_state.shared_vllm.outputs.vllm_port, null)
+  tree_llm_port          = try(data.terraform_remote_state.shared_vllm.outputs.tree_llm_port, null)
 
   cpu_queue_asg_name = "${var.name_prefix}-cpu-queue"
   gpu_queue_asg_name = "${var.name_prefix}-gpu-queue"
@@ -141,7 +143,10 @@ resource "aws_security_group_rule" "temporal_from_workers" {
 
 # Worker → vLLM ingress. Workers route to vLLM via private IP (user_data sets
 # OCR_VLLM_PREFER_PRIVATE_IP=1); without these rules the connection times out.
+# count gated on shared/vllm being applied — degrades to "no rule" when shared/vllm
+# has been destroyed (out-of-order down) instead of blowing up the plan.
 resource "aws_security_group_rule" "vllm_vision_from_workers" {
+  count                    = local.vllm_security_group_id != null ? 1 : 0
   description              = "Batch workers to vision vLLM port"
   type                     = "ingress"
   from_port                = local.vllm_port
@@ -152,6 +157,7 @@ resource "aws_security_group_rule" "vllm_vision_from_workers" {
 }
 
 resource "aws_security_group_rule" "vllm_tree_llm_from_workers" {
+  count                    = local.vllm_security_group_id != null ? 1 : 0
   description              = "Batch workers to tree_llm vLLM port"
   type                     = "ingress"
   from_port                = local.tree_llm_port

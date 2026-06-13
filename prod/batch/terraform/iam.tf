@@ -131,6 +131,15 @@ data "aws_iam_policy_document" "batch_scaling" {
       aws_autoscaling_group.gpu_queue.arn,
     ]
   }
+  # DescribeAutoScalingGroups does not support resource-level scoping in IAM
+  # (AWS API limitation), so it's "*". scale_fleet_down_activity polls this
+  # to confirm the ASG instance list is empty before returning — closes the
+  # rescue race where a fast resubmit re-targets about-to-die boxes.
+  statement {
+    sid       = "DescribeAsgsForDrainWait"
+    actions   = ["autoscaling:DescribeAutoScalingGroups"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "batch_scaling" {

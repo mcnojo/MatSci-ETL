@@ -2,15 +2,16 @@
 # Tear the live motif down.
 #
 # Order (and why):
-#   shared/vllm     destroy   →  Kills the GPU box FIRST. It's the expensive
-#                                resource ($$$/hr) and has no cross-module
-#                                dependents, so getting rid of it before the
-#                                cpu_pipeline + cross-module SG churn is the
-#                                cheapest possible teardown.
 #   live            destroy   →  SQS queue + S3 notification + SSM queue-URL
-#                                param + cross-module IAM attachment. Must
-#                                precede shared/temporal because of the
-#                                cross-module IAM/SG references.
+#                                param + cross-module IAM attachment + the
+#                                cross-module SG ingress rules on the vLLM SG.
+#                                MUST precede BOTH shared/vllm and shared/temporal
+#                                because both are referenced via remote_state
+#                                outputs — destroying them first leaves live
+#                                unable to even plan.
+#   shared/vllm     destroy   →  Kills the GPU box. Could go first for the
+#                                cost saving, but live destroy is fast so the
+#                                dependency-order rule wins.
 #   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
 #                                S3 VPC endpoint. SSM tree_llm keys are NOT
 #                                here anymore — they live in shared/platform
@@ -44,11 +45,11 @@ fi
 
 step() { printf "\n=== %s ===\n" "$*"; }
 
-step "shared/vllm destroy (kill GPU first)"
-"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
-
 step "live destroy"
 "$TF" live destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
+
+step "shared/vllm destroy"
+"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
 
 step "shared/temporal destroy"
 "$TF" shared/temporal destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}

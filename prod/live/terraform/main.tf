@@ -57,14 +57,19 @@ locals {
   live_ssm_prefix                = data.terraform_remote_state.shared_temporal.outputs.live_ssm_prefix
   bucket_arn                     = "arn:${data.aws_partition.current.partition}:s3:::${local.artifact_bucket}"
 
-  vllm_security_group_id = data.terraform_remote_state.shared_vllm.outputs.security_group_id
-  vllm_port              = data.terraform_remote_state.shared_vllm.outputs.vllm_port
-  tree_llm_port          = data.terraform_remote_state.shared_vllm.outputs.tree_llm_port
+  # try() so `terraform destroy` still plans when shared/vllm was already
+  # destroyed (out-of-order down). When null, the gated rules below skip.
+  vllm_security_group_id = try(data.terraform_remote_state.shared_vllm.outputs.security_group_id, null)
+  vllm_port              = try(data.terraform_remote_state.shared_vllm.outputs.vllm_port, null)
+  tree_llm_port          = try(data.terraform_remote_state.shared_vllm.outputs.tree_llm_port, null)
 }
 
 # cpu-pipeline-01 → vLLM ingress. Worker + live consumer both call vLLM via
 # private IP from this box; without these rules connect_tcp times out.
+# count gated on shared/vllm being applied so `terraform destroy` works after
+# shared/vllm has already been destroyed (out-of-order down).
 resource "aws_security_group_rule" "vllm_vision_from_cpu_pipeline" {
+  count                    = local.vllm_security_group_id != null ? 1 : 0
   description              = "cpu-pipeline-01 to vision vLLM port"
   type                     = "ingress"
   from_port                = local.vllm_port
@@ -75,6 +80,7 @@ resource "aws_security_group_rule" "vllm_vision_from_cpu_pipeline" {
 }
 
 resource "aws_security_group_rule" "vllm_tree_llm_from_cpu_pipeline" {
+  count                    = local.vllm_security_group_id != null ? 1 : 0
   description              = "cpu-pipeline-01 to tree_llm vLLM port"
   type                     = "ingress"
   from_port                = local.tree_llm_port
