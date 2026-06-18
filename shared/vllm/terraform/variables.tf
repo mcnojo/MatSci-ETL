@@ -57,7 +57,7 @@ variable "vision_max_model_len" {
 }
 
 variable "vision_gpu_memory_utilization" {
-  description = "Fraction of total GPU memory the vision unit may use. Co-hosted with the tree_llm unit, so vision + tree_llm + headroom must sum to <= 1.0."
+  description = "Fraction of total GPU memory the vision unit may use. Co-hosted with the tree_llm unit, so vision + tree_llm + headroom must sum to <= 1.0. At 0.38 + tree_llm 0.55 = 0.93 reserved, ~3.4 GB box headroom on a 48 GB L40S."
   type        = number
   default     = 0.38
 }
@@ -91,9 +91,9 @@ variable "tree_llm_hf_model_id" {
 }
 
 variable "tree_llm_extra_args" {
-  description = "Extra args appended to the tree_llm `vllm serve` command. Default `--quantization fp8` quantizes gemma weights to FP8 (e4m3) at load time. L40S has FP8 tensor cores (Ada Lovelace, sm_89) so this is hardware-native; FP8 quality loss on a 4B-class model is negligible. Halves the weight footprint (~16 GB BF16 → ~8 GB), which is what makes co-hosting comfortable on a 48 GB L40S at 32K context."
+  description = "Extra args appended to the tree_llm `vllm serve` command. Empty by default: BF16. FP8 (`--quantization fp8`) was attempted on gemma-4-E4B-it and failed at engine init — vLLM 0.23.0's FP8 path doesn't yet handle Gemma4's heterogeneous head dims (head_dim=256 local / 512 global). Revisit when vLLM lands FP8 for Gemma4ForConditionalGeneration."
   type        = string
-  default     = "--quantization fp8"
+  default     = ""
 }
 
 variable "tree_llm_max_model_len" {
@@ -103,13 +103,13 @@ variable "tree_llm_max_model_len" {
 }
 
 variable "tree_llm_gpu_memory_utilization" {
-  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B FP8 (~8GB weights via tree_llm_extra_args=--quantization fp8) + 32K KV cache on a 48GB L40S. Combined with vision_gpu_memory_utilization=0.38 leaves ~10.5 GB headroom for forward-pass activations and CUDA workspace — comfortable. If FP8 is disabled, bump to 0.55 to keep KV pool sufficient (and accept the tight ~3.4 GB free headroom)."
+  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B BF16 (~16 GB weights) + 32K KV cache on a 48 GB L40S — the 0.55 slice leaves ~10 GB for the KV pool (≈3–4 concurrent 32K seqs). Combined with vision_gpu_memory_utilization=0.38 leaves ~3.4 GB box-level headroom for forward-pass activations and CUDA workspace — tight but workable. If forward-pass OOMs surface, drop worker.max_concurrent_gpu before touching this."
   type        = number
-  default     = 0.40
+  default     = 0.55
 }
 
 variable "instance_type" {
-  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; fits co-hosted chandra (~17 GB peak) + gemma-4-E4B at FP8 (~17 GB peak with 32K KV pool) with ~10 GB headroom. L40S has FP8 tensor cores (Ada Lovelace sm_89) so FP8 is hardware-native, not a fallback. g6.xlarge (L4 24 GB) does not co-host this stack even at FP8 — would need single-model split."
+  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; fits co-hosted chandra (~17 GB peak) + gemma-4-E4B BF16 (~26 GB at 0.55 with 32K KV pool) with ~3.4 GB box headroom — tight but workable. Bumping within g6e family below 12xlarge does NOT help (same single L40S, just more CPU/RAM). Real GPU bumps: g6e.12xlarge (4× L40S, multi-GPU split — requires CUDA_VISIBLE_DEVICES per systemd unit) or p5.xlarge (1× H100 80GB)."
   type        = string
   default     = "g6e.xlarge"
 }
