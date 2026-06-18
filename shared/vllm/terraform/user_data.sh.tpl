@@ -1,31 +1,27 @@
 #!/bin/bash
 # vLLM box bootstrap. Rendered by terraform's templatefile(); runs once at first boot.
-# Installs two vLLM systemd units on one GPU box:
-#   - ocr-vllm-vision-serve   :${vllm_port}            ${hf_model_id}
-#   - ocr-vllm-tree-llm-serve :${tree_llm_port}        ${tree_llm_hf_model_id}
-# Each process claims its own slice of GPU memory via --gpu-memory-utilization,
-# so vision + tree_llm + headroom must sum to <= 1.0 (see variables.tf).
+# One systemd unit per box: ocr-vllm-serve :${vllm_port} ${hf_model_id}.
+# Co-hosting is gone — each box owns its GPU end-to-end, so we don't compete
+# with another vllm serve process for KV pool or compile transient.
 
 set -euo pipefail
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
-VISION_LOG=/var/log/vllm_vision.log
-TREE_LLM_LOG=/var/log/vllm_tree_llm.log
+VLLM_LOG=/var/log/vllm.log
 SERVE_USER=ubuntu
 
 echo "[bootstrap] pip install"
 sudo -u "$SERVE_USER" -H bash -lc 'pip install --upgrade pip'
 sudo -u "$SERVE_USER" -H bash -lc 'pip install vllm openai'
 
-echo "[bootstrap] log files"
-install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VISION_LOG"
-install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$TREE_LLM_LOG"
+echo "[bootstrap] log file"
+install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"
 
-echo "[bootstrap] systemd: ocr-vllm-vision-serve"
+echo "[bootstrap] systemd: ocr-vllm-serve (${hf_model_id} :${vllm_port})"
 # `vllm` lives in the serve user's ~/.local/bin per the DLAMI Python layout.
-cat > /etc/systemd/system/ocr-vllm-vision-serve.service <<UNIT_EOF
+cat > /etc/systemd/system/ocr-vllm-serve.service <<UNIT_EOF
 [Unit]
-Description=vLLM serve (vision) ${hf_model_id}
+Description=vLLM serve ${hf_model_id}
 After=network-online.target
 Wants=network-online.target
 
@@ -38,51 +34,21 @@ Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${hf_model_id} \\
     --port ${vllm_port} \\
     --tensor-parallel-size 1 \\
-    --gpu-memory-utilization ${vision_gpu_memory_utilization} \\
+    --gpu-memory-utilization ${gpu_memory_utilization} \\
     --trust-remote-code \\
-    --max-model-len ${vision_max_model_len} \\
+    --max-model-len ${max_model_len} \\
     ${vllm_extra_args}
 Restart=on-failure
 RestartSec=30
-StandardOutput=append:$VISION_LOG
-StandardError=append:$VISION_LOG
-
-[Install]
-WantedBy=multi-user.target
-UNIT_EOF
-
-echo "[bootstrap] systemd: ocr-vllm-tree-llm-serve"
-cat > /etc/systemd/system/ocr-vllm-tree-llm-serve.service <<UNIT_EOF
-[Unit]
-Description=vLLM serve (tree_llm) ${tree_llm_hf_model_id}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$SERVE_USER
-WorkingDirectory=/home/$SERVE_USER
-Environment=HOME=/home/$SERVE_USER
-Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${tree_llm_hf_model_id} \\
-    --port ${tree_llm_port} \\
-    --tensor-parallel-size 1 \\
-    --gpu-memory-utilization ${tree_llm_gpu_memory_utilization} \\
-    --trust-remote-code \\
-    --max-model-len ${tree_llm_max_model_len} \\
-    ${tree_llm_extra_args}
-Restart=on-failure
-RestartSec=30
-StandardOutput=append:$TREE_LLM_LOG
-StandardError=append:$TREE_LLM_LOG
+StandardOutput=append:$VLLM_LOG
+StandardError=append:$VLLM_LOG
 
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
 
 systemctl daemon-reload
-systemctl enable --now ocr-vllm-vision-serve
-systemctl enable --now ocr-vllm-tree-llm-serve
+systemctl enable --now ocr-vllm-serve
 
 echo "[bootstrap] nvidia-smi → CloudWatch sidecar (${gpu_metrics_namespace})"
 # Polls nvidia-smi, publishes one MetricDatum per metric tagged with InstanceId.
@@ -95,8 +61,8 @@ INSTANCE_ID=$(curl -fsSL -H "X-aws-ec2-metadata-token: $(curl -fsSL -X PUT \
     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
     http://169.254.169.254/latest/api/token)" \
     http://169.254.169.254/latest/meta-data/instance-id)
-# Per-line: util,memused_mib,memtotal_mib. One device per row — sum across rows
-# if multi-GPU is later added; today a single row is the norm for g6.xlarge.
+# Per-line: util,memused_mib,memtotal_mib. One device per row — single-GPU
+# instance types (g6.xlarge / g6e.xlarge) emit exactly one row.
 while IFS=, read -r util mem_used mem_total; do
     util=$(echo "$util" | tr -d ' %')
     mem_used=$(echo "$mem_used" | tr -d ' MiB')
@@ -137,4 +103,4 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-gpu-metrics.timer
 
-echo "[bootstrap] complete (models still downloading — tail $VISION_LOG and $TREE_LLM_LOG)"
+echo "[bootstrap] complete (model still downloading — tail $VLLM_LOG)"

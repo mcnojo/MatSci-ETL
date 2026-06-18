@@ -1,21 +1,19 @@
 """Resolve vllm-instance:// URLs against EC2 instance tags.
 
 URL form:           vllm-instance://<model>:<port>/<path>
-EC2 tag filter:     state=running AND any of `_TAG_KEYS` = vllm-<model>-<env_tag>
+EC2 tag filter:     state=running AND role = vllm-<model>-<env_tag>
 
-Two tag keys are checked because shared/vllm/terraform colocates the vision
-model and the tree_llm model on one box, tagging it twice:
-  role          = vllm-<model_key>-<env_tag>            (vision)
-  tree_llm_role = vllm-<tree_llm_model_key>-<env_tag>   (tree_llm)
-So a caller can write vllm-instance://chandra:8004/v1 for the vision endpoint
-and vllm-instance://gemma:8005/v1 for tree_llm, both resolving to the same IP.
+shared/vllm/terraform provisions one instance per entry in var.models, each
+tagged role=vllm-<model_key>-<env_tag>. A caller writes
+vllm-instance://chandra:8004/v1 for the OCR endpoint and
+vllm-instance://gemma:8005/v1 for tree_llm; each resolves to a different IP.
 
 Env knobs (each can be overridden per-call):
     OCR_VLLM_ENV_TAG            - dev | prod (default: prod)
     OCR_VLLM_PREFER_PRIVATE_IP  - 1 to return private IP (default: 0 — public)
 
-Mac-side callers (operator's laptop) leave both unset → resolves to public IP
-of the prod vLLM box. Worker user-data sets PREFER_PRIVATE_IP=1 so in-VPC
+Mac-side callers (operator's laptop) leave both unset → resolves to the public
+IP of the prod box. Worker user-data sets PREFER_PRIVATE_IP=1 so in-VPC
 workers route over the private network.
 """
 
@@ -29,10 +27,6 @@ import boto3
 
 _DEFAULT_ENV_TAG = "prod"
 _CACHE_TTL_S = 300
-
-# Order matters only for error messages. A box tagged with both will match on
-# the first key tried.
-_TAG_KEYS = ("role", "tree_llm_role")
 
 _cache: dict[tuple[str, str], tuple[dict, float]] = {}
 _cache_lock = Lock()
@@ -57,29 +51,23 @@ def _describe_vllm_instance(model: str, env_tag: str) -> dict:
 
     role_tag = f"vllm-{model}-{env_tag}"
     ec2 = boto3.client("ec2")
-
-    instances: list[dict] = []
-    for tag_key in _TAG_KEYS:
-        resp = ec2.describe_instances(Filters=[
-            {"Name": f"tag:{tag_key}", "Values": [role_tag]},
-            {"Name": "instance-state-name", "Values": ["running"]},
-        ])
-        instances = [
-            i for r in resp.get("Reservations", []) for i in r.get("Instances", [])
-        ]
-        if instances:
-            break
+    resp = ec2.describe_instances(Filters=[
+        {"Name": "tag:role", "Values": [role_tag]},
+        {"Name": "instance-state-name", "Values": ["running"]},
+    ])
+    instances = [
+        i for r in resp.get("Reservations", []) for i in r.get("Instances", [])
+    ]
 
     if not instances:
-        tried = ", ".join(_TAG_KEYS)
         raise LookupError(
-            f"no running EC2 instance tagged {tried}={role_tag!r}. "
+            f"no running EC2 instance tagged role={role_tag!r}. "
             f"apply shared/vllm with env_tag={env_tag!r} first."
         )
     if len(instances) > 1:
         ids = [i["InstanceId"] for i in instances]
         raise LookupError(
-            f"multiple running instances tagged {tag_key}={role_tag!r}: {ids}. "
+            f"multiple running instances tagged role={role_tag!r}: {ids}. "
             f"terminate the extras."
         )
     inst = instances[0]

@@ -10,9 +10,9 @@ data "aws_subnets" "selected" {
   }
 }
 
-# AZ-scoped subnet pool: only fetched when var.availability_zone is set. The
+# AZ-scoped subnet pool — only fetched when var.availability_zone is set. The
 # postcondition turns "no subnet in that AZ" into a clear plan-time error
-# instead of a silent fallback that ignores the operator's intent.
+# instead of silently falling back and ignoring the operator's intent.
 data "aws_subnets" "in_az" {
   count = var.availability_zone != null ? 1 : 0
   filter {
@@ -31,18 +31,20 @@ data "aws_subnets" "in_az" {
   }
 }
 
-# Singular subnet lookup to read the AZ for the offerings preflight.
+# Singular subnet lookup to read the AZ for the per-model offerings preflight.
 data "aws_subnet" "chosen" {
   id = local.subnet_id
 }
 
-# Plan-time guard: does this AZ actually offer var.instance_type? Catches
-# "g6e isn't sold in us-west-2c" before RunInstances. Does NOT catch "sold
-# but currently saturated" — the 3-min create timeout below handles that.
+# Plan-time guard: does this AZ actually offer each model's instance type?
+# Catches "g6e isn't sold in us-west-2c" before RunInstances. Does NOT catch
+# "sold but currently saturated" — the 3-min create timeout on the instance
+# handles that.
 data "aws_ec2_instance_type_offerings" "in_az" {
+  for_each = var.models
   filter {
     name   = "instance-type"
-    values = [var.instance_type]
+    values = [each.value.instance_type]
   }
   filter {
     name   = "location"
@@ -68,34 +70,26 @@ data "aws_ami" "dlami" {
 
 locals {
   ami_id = var.ami_id != null ? var.ami_id : data.aws_ami.dlami[0].id
-  # 3-tier subnet pick: explicit subnet_id > AZ-name shortcut > lex-first fallback.
+  # 3-tier subnet pick: explicit subnet_id > AZ-name shortcut > lex-first
+  # fallback. Shared across every model in this module.
   subnet_id = (
     var.subnet_id != null ? var.subnet_id :
     var.availability_zone != null ? data.aws_subnets.in_az[0].ids[0] :
     sort(data.aws_subnets.selected.ids)[0]
   )
-  role_tag          = "vllm-${var.model_key}-${var.env_tag}"
-  tree_llm_role_tag = "vllm-${var.tree_llm_model_key}-${var.env_tag}"
-  user_data_vars = {
-    hf_model_id                     = var.hf_model_id
-    vllm_port                       = var.vllm_port
-    vllm_extra_args                 = var.vllm_extra_args
-    vision_max_model_len            = var.vision_max_model_len
-    vision_gpu_memory_utilization   = var.vision_gpu_memory_utilization
-    tree_llm_hf_model_id            = var.tree_llm_hf_model_id
-    tree_llm_port                   = var.tree_llm_port
-    tree_llm_extra_args             = var.tree_llm_extra_args
-    tree_llm_max_model_len          = var.tree_llm_max_model_len
-    tree_llm_gpu_memory_utilization = var.tree_llm_gpu_memory_utilization
-    aws_region                      = var.region
-    gpu_metrics_interval            = var.gpu_metrics_interval_s
-    gpu_metrics_namespace           = var.gpu_metrics_namespace
+  role_tags = {
+    for k, _ in var.models : k => "vllm-${k}-${var.env_tag}"
   }
 }
 
+# One SG per model. Strict least-privilege: each SG only opens that model's
+# port to operator_cidrs, so an inbound rule for chandra can't accidentally
+# reach gemma. Consumer modules (prod/batch, prod/live) attach worker-SG
+# ingress via the per-model security_group_ids output.
 resource "aws_security_group" "vllm" {
-  name        = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}-sg"
-  description = "vLLM serving SG for ${local.role_tag}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_id output."
+  for_each    = var.models
+  name        = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}-sg"
+  description = "vLLM serving SG for ${local.role_tags[each.key]}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_ids output."
   vpc_id      = data.aws_vpc.selected.id
 
   egress {
@@ -106,46 +100,32 @@ resource "aws_security_group" "vllm" {
     cidr_blocks      = ["0.0.0.0/0"]
     ipv6_cidr_blocks = ["::/0"]
   }
-
-  # No inline ingress. Operator rules below are gated on operator_cidrs so
-  # the fail-closed default is real (empty → SSM-only). Worker-SG ingress
-  # is owned by the consumer module (prod/batch, prod/live) — same pattern
-  # used for shared/temporal — which avoids both apply-order dependencies
-  # (we'd need worker SGs to exist before vllm applies, but up.sh runs vllm
-  # before the workers) and shared/vllm having to enumerate every caller.
+  # No inline ingress: operator rules below are gated on operator_cidrs so
+  # the fail-closed default is real (empty → SSM-only). Worker-SG ingress is
+  # owned by consumer modules (prod/batch, prod/live) to avoid apply-order
+  # dependencies (workers don't exist yet when vllm applies).
 }
 
-resource "aws_security_group_rule" "vision_from_operator" {
-  count             = length(var.operator_cidrs) > 0 ? 1 : 0
-  description       = "vision vLLM port from operator CIDR(s)"
+resource "aws_security_group_rule" "vllm_from_operator" {
+  for_each          = length(var.operator_cidrs) > 0 ? var.models : {}
+  description       = "vLLM port for ${each.key} from operator CIDR(s)"
   type              = "ingress"
-  from_port         = var.vllm_port
-  to_port           = var.vllm_port
+  from_port         = each.value.port
+  to_port           = each.value.port
   protocol          = "tcp"
   cidr_blocks       = var.operator_cidrs
-  security_group_id = aws_security_group.vllm.id
-}
-
-resource "aws_security_group_rule" "tree_llm_from_operator" {
-  count             = length(var.operator_cidrs) > 0 ? 1 : 0
-  description       = "tree_llm vLLM port from operator CIDR(s)"
-  type              = "ingress"
-  from_port         = var.tree_llm_port
-  to_port           = var.tree_llm_port
-  protocol          = "tcp"
-  cidr_blocks       = var.operator_cidrs
-  security_group_id = aws_security_group.vllm.id
+  security_group_id = aws_security_group.vllm[each.key].id
 }
 
 resource "aws_security_group_rule" "ssh_from_operator" {
-  count             = (var.allow_ssh_from_operator && length(var.operator_cidrs) > 0) ? 1 : 0
-  description       = "SSH from operator CIDR(s)"
+  for_each          = (var.allow_ssh_from_operator && length(var.operator_cidrs) > 0) ? var.models : {}
+  description       = "SSH from operator CIDR(s) — ${each.key} box"
   type              = "ingress"
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
   cidr_blocks       = var.operator_cidrs
-  security_group_id = aws_security_group.vllm.id
+  security_group_id = aws_security_group.vllm[each.key].id
 }
 
 data "aws_iam_policy_document" "ec2_assume" {
@@ -158,18 +138,24 @@ data "aws_iam_policy_document" "ec2_assume" {
   }
 }
 
+# One IAM role per model. Could be shared (the policy is identical), but a
+# per-instance role keeps the principal-of-least-name straight in CloudTrail
+# and lets a per-model policy fork in later without restructuring.
 resource "aws_iam_role" "vllm" {
-  name               = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}"
+  for_each           = var.models
+  name               = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
 resource "aws_iam_instance_profile" "vllm" {
-  name = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}"
-  role = aws_iam_role.vllm.name
+  for_each = var.models
+  name     = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+  role     = aws_iam_role.vllm[each.key].name
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
-  role       = aws_iam_role.vllm.name
+  for_each   = var.models
+  role       = aws_iam_role.vllm[each.key].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
@@ -182,21 +168,25 @@ data "aws_iam_policy_document" "vllm" {
 }
 
 resource "aws_iam_policy" "vllm" {
-  name   = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}"
-  policy = data.aws_iam_policy_document.vllm.json
+  for_each = var.models
+  name     = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+  policy   = data.aws_iam_policy_document.vllm.json
 }
 
 resource "aws_iam_role_policy_attachment" "vllm" {
-  role       = aws_iam_role.vllm.name
-  policy_arn = aws_iam_policy.vllm.arn
+  for_each   = var.models
+  role       = aws_iam_role.vllm[each.key].name
+  policy_arn = aws_iam_policy.vllm[each.key].arn
 }
 
 resource "aws_instance" "vllm" {
+  for_each = var.models
+
   ami                    = local.ami_id
-  instance_type          = var.instance_type
+  instance_type          = each.value.instance_type
   subnet_id              = local.subnet_id
-  vpc_security_group_ids = [aws_security_group.vllm.id]
-  iam_instance_profile   = aws_iam_instance_profile.vllm.name
+  vpc_security_group_ids = [aws_security_group.vllm[each.key].id]
+  iam_instance_profile   = aws_iam_instance_profile.vllm[each.key].name
   key_name               = var.key_pair_name
 
   metadata_options {
@@ -214,23 +204,29 @@ resource "aws_instance" "vllm" {
     encrypted             = true
   }
 
-  user_data = templatefile("${path.module}/user_data.sh.tpl", local.user_data_vars)
+  user_data = templatefile("${path.module}/user_data.sh.tpl", {
+    hf_model_id            = each.value.hf_model_id
+    vllm_port              = each.value.port
+    vllm_extra_args        = each.value.extra_args
+    max_model_len          = each.value.max_model_len
+    gpu_memory_utilization = each.value.gpu_memory_utilization
+    aws_region             = var.region
+    gpu_metrics_interval   = var.gpu_metrics_interval_s
+    gpu_metrics_namespace  = var.gpu_metrics_namespace
+  })
 
-  # Two role tags: shared/vllm/resolve.py walks both, so callers can write
-  # vllm-instance://chandra:8004/v1 (vision) AND vllm-instance://gemma:8005/v1
-  # (tree_llm) against the same box.
+  # Single role tag — shared/vllm/resolve.py filters on `role=vllm-<key>-<env>`
+  # and finds exactly one match per model.
   tags = {
-    Name          = "${var.name_prefix}-vllm-${var.model_key}-${var.env_tag}"
-    role          = local.role_tag
-    tree_llm_role = local.tree_llm_role_tag
-    Model         = var.model_key
-    TreeLlmModel  = var.tree_llm_model_key
-    Env           = var.env_tag
+    Name  = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+    role  = local.role_tags[each.key]
+    Model = each.key
+    Env   = var.env_tag
   }
 
   # Cap the silent RunInstances retry loop. Default is 10m; capacity errors
   # surface in ≤3m here. Bounds only the EC2 state→running wait — user_data
-  # (model downloads, vLLM warmup) runs post-running and isn't affected.
+  # (model download, vLLM warmup) runs post-running and isn't affected.
   timeouts {
     create = "3m"
   }
@@ -238,8 +234,8 @@ resource "aws_instance" "vllm" {
   lifecycle {
     ignore_changes = [user_data, ami]
     precondition {
-      condition     = length(data.aws_ec2_instance_type_offerings.in_az.instance_types) > 0
-      error_message = "instance_type ${var.instance_type} is not offered in AZ ${data.aws_subnet.chosen.availability_zone}. Pick a different AZ via --zone (e.g. us-west-2a/2b/2d) or change var.instance_type."
+      condition     = length(data.aws_ec2_instance_type_offerings.in_az[each.key].instance_types) > 0
+      error_message = "models[\"${each.key}\"].instance_type ${each.value.instance_type} is not offered in AZ ${data.aws_subnet.chosen.availability_zone}. Pick a different AZ via --zone (e.g. us-west-2a/2b/2d) or change that model's instance_type."
     }
   }
 }

@@ -38,13 +38,12 @@ pipeline_overrides:
     # which routes s3:// transparently. Same bucket as storage.s3.bucket below.
     assets_uri_prefix: "s3://chem-lit-artifacts/assets"
 
-  # tree_llm runs as the co-hosted second vllm serve unit on the GPU box
-  # (shared/vllm provisions both). Switches from ollama/gemma4-mlx (laptop dev)
-  # to vLLM/gemma-4-E4B-it (prod) — instruction-tuned variant ships a chat
-  # template; the base `-E4B` does not and vLLM 400s /v1/chat/completions on
-  # transformers ≥4.44. Must match shared/vllm var.tree_llm_hf_model_id
-  # exactly — vLLM serves under the HF id and the client sends it verbatim.
-  # Resolver picks the box up via tree_llm_role=vllm-gemma-prod.
+  # tree_llm runs on its own dedicated GPU box (shared/vllm var.models["gemma"]).
+  # Switches from ollama/gemma4-mlx (laptop dev) to vLLM/gemma-4-E4B-it (prod) —
+  # the instruction-tuned variant ships a chat template; the base `-E4B` does not
+  # and vLLM 400s /v1/chat/completions on transformers ≥4.44. Must match the
+  # var.models["gemma"].hf_model_id exactly — vLLM serves under the HF id and
+  # the client sends it verbatim. Resolver picks the box up via role=vllm-gemma-prod.
   tree_llm:
     provider: "openai"              # vLLM exposes the OpenAI Chat Completions API
     model: "google/gemma-4-E4B-it"
@@ -52,13 +51,17 @@ pipeline_overrides:
     base_url: "vllm-instance://gemma:8005/v1"
     api_key_env: null
     prompt_style: "local"
-    max_response_tokens: 8192       # paired with tree.max_tokens_per_node=12000 in pipeline_config.yaml. 12K input + ~3K overhead + 8K out ≈ 23K, fits tree_llm_max_model_len=24576.
+    max_response_tokens: 8192       # response cap on each chat call. The 128K context window on the dedicated gemma box leaves ample headroom; this stays as a sane per-call ceiling.
 
-# EC2 instance tags (for infra scripts)
+# EC2 instance tags (informational; not read by code — the actual instance
+# types live in shared/vllm/terraform/variables.tf var.models).
 instances:
   cpu:
     name: "ocr-bench-cpu-pipeline-01"
     type: "m7i.xlarge"
-  gpu:
-    name: "ocr-bench-gpu-model-01"
-    type: "g6e.xlarge"              # L40S 48GB — fits chandra + gemma-3-4b co-hosted
+  gpu_chandra:
+    name: "ocr-bench-vllm-chandra-prod"
+    type: "g6.xlarge"               # L4 24GB — dedicated chandra OCR.
+  gpu_gemma:
+    name: "ocr-bench-vllm-gemma-prod"
+    type: "g6e.xlarge"              # L40S 48GB — dedicated gemma tree_llm, 128K context.

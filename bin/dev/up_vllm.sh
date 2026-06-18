@@ -74,8 +74,7 @@ step "wait_health (vllm only)"
 "$REPO_ROOT/bin/wait_health.sh" vllm
 
 echo
-public_ip=$(terraform -chdir="$REPO_ROOT/shared/vllm/terraform" output -raw public_ip)
-port=$(terraform -chdir="$REPO_ROOT/shared/vllm/terraform" output -raw vllm_port)
-echo "dev vllm box up at http://$public_ip:$port"
-echo "verify:  curl -s http://$public_ip:$port/health"
+# One row per model in var.models — echo every endpoint the operator can hit.
+terraform -chdir="$REPO_ROOT/shared/vllm/terraform" output -json models \
+  | jq -r 'to_entries[] | "dev vllm \(.key) up at http://\(.value.public_ip):\(.value.port)  (curl http://\(.value.public_ip):\(.value.port)/health)"'
 echo "tear down: bin/dev/down_vllm.sh"

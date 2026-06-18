@@ -101,7 +101,7 @@ step "log tail commands"
 _region="${AWS_DEFAULT_REGION:-${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}}"
 _temporal_instance=$("$TF" shared/temporal output -raw cpu_pipeline_instance_id 2>/dev/null || true)
 _temporal_log_group=$("$TF" shared/temporal output -raw log_group_name 2>/dev/null || true)
-_vllm_instance=$("$TF" shared/vllm output -raw instance_id 2>/dev/null || true)
+_vllm_models_json=$("$TF" shared/vllm output -json models 2>/dev/null || echo "")
 _region_flag=${_region:+" --region $_region"}
 
 if [[ -n "$_temporal_instance" && -n "$_temporal_log_group" ]]; then
@@ -110,11 +110,14 @@ if [[ -n "$_temporal_instance" && -n "$_temporal_log_group" ]]; then
     echo "  aws logs tail $_temporal_log_group --log-stream-name-prefix $_temporal_instance/$stream --follow$_region_flag"
   done
 fi
-if [[ -n "$_vllm_instance" ]]; then
-  echo "vLLM (SSM — /var/log on the instance):"
-  for log in vllm_vision vllm_tree_llm; do
-    echo "  aws ssm start-session --target $_vllm_instance$_region_flag --document-name AWS-StartInteractiveCommand --parameters 'command=[\"tail -f /var/log/$log.log\"]'"
-  done
+# One tail command per vLLM box. Each box runs a single `vllm serve` unit
+# logging to /var/log/vllm.log.
+if [[ -n "$_vllm_models_json" && "$_vllm_models_json" != "null" && "$_vllm_models_json" != "{}" ]]; then
+  echo "vLLM (SSM — /var/log/vllm.log on each instance):"
+  while IFS=$'\t' read -r model instance_id; do
+    echo "  # $model"
+    echo "  aws ssm start-session --target $instance_id$_region_flag --document-name AWS-StartInteractiveCommand --parameters 'command=[\"tail -f /var/log/vllm.log\"]'"
+  done < <(echo "$_vllm_models_json" | jq -r 'to_entries[] | "\(.key)\t\(.value.instance_id)"')
 fi
 echo
 
