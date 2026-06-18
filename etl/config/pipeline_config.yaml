@@ -45,7 +45,7 @@ vision_server:
 tree:
   toc_check_pages: 25
   max_pages_per_node: 10
-  max_tokens_per_node: 12000          # group-text input budget. Conservative cap on per-node chunks fed to tree_llm; the dedicated gemma box has 128K context, so this is a quality knob (smaller chunks → tighter summaries), not a context-headroom forcer.
+  max_tokens_per_node: 48000          # group-text input budget. Larger chunks → fewer fragmentation seams between tree nodes. Budget per call: 48K chunk + accumulated TOC + ~3K prompt + 16K response ≈ 67K, well inside gemma's 128K window.
   add_node_summary: true
   add_node_id: true
   add_doc_description: false
