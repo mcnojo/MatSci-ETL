@@ -52,7 +52,7 @@ pipeline_overrides:
     base_url: "vllm-instance://gemma:8005/v1"
     api_key_env: null
     prompt_style: "local"
-    max_response_tokens: 4096
+    max_response_tokens: 8192       # paired with tree.max_tokens_per_node=12000 in pipeline_config.yaml. 12K input + ~3K overhead + 8K out ≈ 23K, fits tree_llm_max_model_len=24576.
 
 # EC2 instance tags (for infra scripts)
 instances:

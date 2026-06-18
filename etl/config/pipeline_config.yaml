@@ -45,7 +45,7 @@ vision_server:
 tree:
   toc_check_pages: 25
   max_pages_per_node: 10
-  max_tokens_per_node: 18000
+  max_tokens_per_node: 12000          # group-text input budget. Sized against tree_llm_max_model_len=24576: 12K input + ~3K prompt/accumulated-TOC overhead + 8K response = ~23K. Raise only if tree_llm context grows.
   add_node_summary: true
   add_node_id: true
   add_doc_description: false

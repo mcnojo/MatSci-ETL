@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Callable
 import fitz  # PyMuPDF
 from PIL import Image
 
@@ -130,6 +131,7 @@ class AssetExtractor:
 
     def extract_all_pages(
         self, page_range: set[int],
+        heartbeat: Callable[..., None] | None = None,
     ) -> tuple[dict[int, list[dict]], dict[int, str]]:
         """Process all requested pages.
 
@@ -137,12 +139,19 @@ class AssetExtractor:
         - page_elements: page_index -> list of element dicts (each with asset_uri)
         - page_image_uris: page_index -> URI of the rendered full-page PNG
           (only populated when save_page_images is true)
+
+        `heartbeat(page_idx, total)` is fired once per page so a Temporal activity
+        wrapper can pass `activity.heartbeat` and avoid the worker's heartbeat
+        timeout — render + layout-detect on a dense page can exceed the cap.
+        Default no-op keeps non-Temporal callers (etl/cli) untouched.
         """
         page_elements: dict[int, list[dict]] = {}
         page_image_uris: dict[int, str] = {}
-        for page_idx in sorted(page_range):
-            if page_idx < 1 or page_idx > len(self.doc):
-                continue
+        ordered = sorted(p for p in page_range if 1 <= p <= len(self.doc))
+        total = len(ordered)
+        for page_idx in ordered:
+            if heartbeat is not None:
+                heartbeat(page_idx, total)
             if self.save_pages:
                 page_image_uris[page_idx] = self.save_page_image(page_idx)
             elems = self.extract_page_elements(page_idx, node_id="doc")

@@ -174,7 +174,9 @@ async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOut
     with _localized_pdf(input.pdf_path) as local_pdf:
         extractor = AssetExtractor(local_pdf, input.document_id, input.config)
         try:
-            page_elements, page_image_uris = extractor.extract_all_pages(all_pages)
+            page_elements, page_image_uris = extractor.extract_all_pages(
+                all_pages, heartbeat=activity.heartbeat,
+            )
         finally:
             extractor.close()
 
