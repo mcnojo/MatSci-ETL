@@ -8,6 +8,7 @@ workers that register the CPU-lane queues or the workflows that fan out to
 those activities.
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -23,6 +24,7 @@ from shared.schemas import DocumentTree
 
 from .asset_extractor import AssetExtractor
 from .enricher import assign_elements_to_tree
+from .heartbeat import await_with_heartbeats
 from .tree_logic import count_tokens
 
 
@@ -166,19 +168,27 @@ async def load_pages_activity(input: LoadPagesInput) -> LoadPagesOutput:
 
 @activity.defn(name="process-pdf_extract-assets")
 async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOutput:
-    all_pages: set[int] = set()
-    for start, end in input.page_ranges:
-        for p in range(start, end + 1):
-            all_pages.add(p)
+    activity.heartbeat()
 
-    with _localized_pdf(input.pdf_path) as local_pdf:
-        extractor = AssetExtractor(local_pdf, input.document_id, input.config)
-        try:
-            page_elements, page_image_uris = extractor.extract_all_pages(
-                all_pages, heartbeat=activity.heartbeat,
-            )
-        finally:
-            extractor.close()
+    # Sync body — S3 download + LayoutDetector init + per-page render/yolo/S3-put
+    # — easily blocks the event loop past the 30 s heartbeat window. Run it on a
+    # worker thread and let await_with_heartbeats tick the activity from the
+    # main loop. Same shape gpu_activities uses for vLLM HTTP calls.
+    def _run() -> tuple[dict[int, list[dict]], dict[int, str]]:
+        all_pages: set[int] = set()
+        for start, end in input.page_ranges:
+            for p in range(start, end + 1):
+                all_pages.add(p)
+        with _localized_pdf(input.pdf_path) as local_pdf:
+            extractor = AssetExtractor(local_pdf, input.document_id, input.config)
+            try:
+                return extractor.extract_all_pages(all_pages)
+            finally:
+                extractor.close()
+
+    page_elements, page_image_uris = await await_with_heartbeats(
+        asyncio.to_thread(_run),
+    )
 
     total = sum(len(v) for v in page_elements.values())
     by_type: dict[str, int] = {}
