@@ -173,6 +173,7 @@ class ProcessPdfWorkflow:
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         page_elements = assets_out.page_elements
+        page_image_uris = assets_out.page_image_uris
 
         # Stage 3: Per-image Chandra OCR (GPU) — fan out
         if config["enrichment"]["run_ocr"]:
@@ -184,6 +185,7 @@ class ProcessPdfWorkflow:
             AssignElementsInput(
                 tree=tree,
                 page_elements=page_elements,
+                page_image_uris=page_image_uris,
                 pdf_path=input.pdf_path,
                 document_id=input.document_id,
                 config=config,
@@ -239,7 +241,7 @@ class ProcessPdfWorkflow:
         targets: list[tuple[int, int]] = []
         for page_idx, elements in page_elements.items():
             for elem_idx, elem in enumerate(elements):
-                if elem.get("asset_path"):
+                if elem.get("asset_uri"):
                     targets.append((page_idx, elem_idx))
 
         if not targets:
@@ -254,7 +256,7 @@ class ProcessPdfWorkflow:
                         base_url=vision_cfg["base_url"],
                         api_key=vision_cfg["api_key"],
                         model=vision_cfg["ocr_model"],
-                        image_path=elem["asset_path"],
+                        image_uri=elem["asset_uri"],
                         prompt=CHANDRA_OCR_LAYOUT_PROMPT,
                     ),
                     task_queue=gpu_q,

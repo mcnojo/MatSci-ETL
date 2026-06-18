@@ -33,7 +33,7 @@ class ChandraCallInput(BaseModel):
     base_url: str               # resolved vLLM endpoint
     api_key: str
     model: str                  # ocr model id
-    image_path: str             # local filesystem path; activity reads + b64-encodes
+    image_uri: str              # s3:// URI or local path; activity reads via shared.s3_io
     prompt: str                 # CHANDRA_OCR_LAYOUT_PROMPT or variant
     max_tokens: int = 4096
 

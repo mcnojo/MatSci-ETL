@@ -25,11 +25,16 @@ def flatten_tree(nodes: list[TreeNode]) -> list[TreeNode]:
 def assign_elements_to_tree(
     tree: DocumentTree,
     page_elements: dict[int, list[dict]],
+    page_image_uris: dict[int, str],
     pdf_path: str,
-    pages_dir: Path,
     config: dict,
 ) -> DocumentTree:
-    """Attach visual elements to the deepest tree node whose page range contains them."""
+    """Attach visual elements to the deepest tree node whose page range contains them.
+
+    `page_image_uris` is the page_index -> URI mapping produced by AssetExtractor.
+    Empty when output.save_page_images is false; the per-node source list is then
+    just empty. No filesystem inspection — URIs are authoritative.
+    """
     seed_entities = load_seed_entities(
         str(Path(config.get("_config_dir", "config")) / "chem_entities.yaml")
     )
@@ -41,19 +46,17 @@ def assign_elements_to_tree(
         for p in range(node.start_index, node.end_index + 1):
             page_to_node[p] = node
 
-    # Populate NodeSource
-    save_pages = config["output"]["save_page_images"]
+    # Populate NodeSource from the URI map (no per-worker disk check).
     for node in flat_nodes:
-        page_image_paths = []
-        if save_pages:
-            for p in range(node.start_index, node.end_index + 1):
-                img_path = pages_dir / f"p{p:04d}.png"
-                if img_path.exists():
-                    page_image_paths.append(str(img_path.resolve()))
+        uris = [
+            page_image_uris[p]
+            for p in range(node.start_index, node.end_index + 1)
+            if p in page_image_uris
+        ]
         node.source = NodeSource(
             pdf_path=str(Path(pdf_path).resolve()),
             paper_id=tree.paper_id,
-            page_images=page_image_paths,
+            page_image_uris=uris,
         )
 
     # Assign elements

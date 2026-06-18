@@ -15,7 +15,7 @@ class VisualElement(BaseModel):
     element_type: str  # "figure" | "table" | "isolate_formula"
     page_index: int    # 1-based physical page number
     bbox: BoundingBox
-    asset_path: str
+    asset_uri: str     # s3://… or local path; routed through shared.s3_io
     caption: Optional[str] = None
     ocr_text: Optional[str] = None
     ocr_parsed: Optional[dict] = None  # normalized chandra output (see chandra_parser.py)
@@ -26,7 +26,7 @@ class VisualElement(BaseModel):
 class NodeSource(BaseModel):
     pdf_path: str
     paper_id: str
-    page_images: list[str] = Field(default_factory=list)
+    page_image_uris: list[str] = Field(default_factory=list)  # s3://… or local; same contract as VisualElement.asset_uri
 
 
 class TreeNode(BaseModel):

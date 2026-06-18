@@ -24,12 +24,16 @@ import yaml
 
 _RELATIVE_PATH_FIELDS: tuple[tuple[str, ...], ...] = (
     ("output", "kb_root"),
+    ("output", "assets_uri_prefix"),  # only anchored when local; s3:// values pass through
     ("storage", "local", "root"),  # scaffolding for the future S3 cutover
 )
 
 
 def _anchor_relative_paths(cfg: dict, config_dir: Path) -> None:
-    """Resolve relative path fields in `cfg` against `config_dir`. In-place."""
+    """Resolve relative path fields in `cfg` against `config_dir`. In-place.
+
+    Skips s3:// (and other URL-scheme) values — they're already absolute references.
+    """
     for path_spec in _RELATIVE_PATH_FIELDS:
         *parents, leaf = path_spec
         node = cfg
@@ -41,6 +45,8 @@ def _anchor_relative_paths(cfg: dict, config_dir: Path) -> None:
             continue
         raw = node.get(leaf)
         if not isinstance(raw, str):
+            continue
+        if "://" in raw:
             continue
         p = Path(raw)
         if not p.is_absolute():

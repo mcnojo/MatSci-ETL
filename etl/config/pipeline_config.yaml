@@ -98,3 +98,9 @@ output:
   kb_root: "../kb"
   save_page_images: true
   pretty_print_json: true
+  # Where AssetExtractor publishes element + page PNGs so cross-worker consumers
+  # (e.g. GPU chandra activity) can read them via shared.s3_io. In local dev this
+  # is a path on disk — get_bytes/put_bytes route to the filesystem. Prod overlay
+  # replaces this with an s3:// URI so files survive the CPU→GPU machine boundary.
+  # Relative paths are anchored at load time (shared/config_loader.py).
+  assets_uri_prefix: "../kb"

@@ -13,6 +13,7 @@ import time
 from openai import AsyncOpenAI
 from temporalio import activity
 
+from shared.s3_io import get_bytes
 from shared.temporal.activity_models import (
     ChandraCallInput,
     ChandraCallOutput,
@@ -25,9 +26,9 @@ from .heartbeat import await_with_heartbeats
 from .llm_calls import execute_text_call
 
 
-def _image_to_b64(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+def _image_uri_to_b64(image_uri: str) -> str:
+    """Fetch image bytes via shared.s3_io (s3:// or local) and b64-encode."""
+    return base64.b64encode(get_bytes(image_uri)).decode("utf-8")
 
 
 def _openai_usage(response) -> tuple[int, int]:
@@ -66,7 +67,7 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
     # Resolve at activity boundary so OCR_VLLM_PREFER_PRIVATE_IP routes in-VPC
     # workers over the private network without the CLI knowing.
     base_url = resolve_vllm_url(input.base_url)
-    b64 = _image_to_b64(input.image_path)
+    b64 = _image_uri_to_b64(input.image_uri)
     client = AsyncOpenAI(base_url=base_url, api_key=input.api_key)
     started_at = time.time()
     response = await await_with_heartbeats(

@@ -52,6 +52,9 @@ class ExtractAssetsInput(BaseModel):
 class ExtractAssetsOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
     page_elements: dict[int, list[dict]]
+    # page_index -> URI of the rendered page PNG. Empty when save_page_images=false.
+    # Threaded into AssignElementsInput so the enricher never touches local pages_dir.
+    page_image_uris: dict[int, str]
     total_elements: int
     element_counts: dict[str, int]
 
@@ -60,6 +63,7 @@ class AssignElementsInput(BaseModel):
     model_config = ConfigDict(frozen=True)
     tree: DocumentTree
     page_elements: dict[int, list[dict]]
+    page_image_uris: dict[int, str]
     pdf_path: str
     document_id: str
     config: dict
@@ -119,15 +123,16 @@ def _is_likely_scanned(page_list: list[tuple[str, int]], threshold: int = 30) ->
     return median_words < threshold
 
 
-_PATH_FIELDS: frozenset[str] = frozenset({"pdf_path", "asset_path"})
-_PATH_LIST_FIELDS: frozenset[str] = frozenset({"page_images"})
+_PATH_FIELDS: frozenset[str] = frozenset({"pdf_path", "asset_uri"})
+_PATH_LIST_FIELDS: frozenset[str] = frozenset({"page_image_uris"})
 
 
 def _portablize_paths(obj, anchor: Path) -> None:
     """In-place: rewrite known path fields to be relative to `anchor`.
 
     Only touches absolute values in fields known to hold filesystem paths
-    (pdf_path, asset_path, page_images). Content fields untouched.
+    (pdf_path, asset_uri, page_image_uris). s3:// URIs and other non-local
+    strings pass through untouched (Path("s3://…").is_absolute() is False).
     """
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -169,7 +174,7 @@ async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOut
     with _localized_pdf(input.pdf_path) as local_pdf:
         extractor = AssetExtractor(local_pdf, input.document_id, input.config)
         try:
-            page_elements = extractor.extract_all_pages(all_pages)
+            page_elements, page_image_uris = extractor.extract_all_pages(all_pages)
         finally:
             extractor.close()
 
@@ -180,20 +185,18 @@ async def extract_assets_activity(input: ExtractAssetsInput) -> ExtractAssetsOut
             by_type[e["element_type"]] = by_type.get(e["element_type"], 0) + 1
 
     return ExtractAssetsOutput(
-        page_elements=page_elements, total_elements=total, element_counts=by_type,
+        page_elements=page_elements,
+        page_image_uris=page_image_uris,
+        total_elements=total,
+        element_counts=by_type,
     )
 
 
 @activity.defn(name="process-pdf_assign-elements")
 async def assign_elements_activity(input: AssignElementsInput) -> AssignElementsOutput:
-    pages_dir = (
-        Path(input.config["output"]["kb_root"])
-        / input.document_id
-        / "assets"
-        / "pages"
-    )
     tree = assign_elements_to_tree(
-        input.tree, input.page_elements, input.pdf_path, pages_dir, input.config,
+        input.tree, input.page_elements, input.page_image_uris,
+        input.pdf_path, input.config,
     )
     return AssignElementsOutput(tree=tree)
 

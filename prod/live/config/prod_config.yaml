@@ -33,6 +33,10 @@ pipeline_overrides:
   output:
     kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
     save_page_images: false         # no need to persist full-page renders in prod
+    # AssetExtractor publishes element PNGs (and page PNGs when save_page_images=true)
+    # here. Cross-worker reads (CPU→GPU chandra) go through shared.s3_io.get_bytes,
+    # which routes s3:// transparently. Same bucket as storage.s3.bucket below.
+    assets_uri_prefix: "s3://chem-lit-artifacts/assets"
 
   # tree_llm runs as the co-hosted second vllm serve unit on the GPU box
   # (shared/vllm provisions both). Switches from ollama/gemma4-mlx (laptop dev)
@@ -48,7 +52,7 @@ pipeline_overrides:
     base_url: "vllm-instance://gemma:8005/v1"
     api_key_env: null
     prompt_style: "local"
-    max_response_tokens: 4096
+    max_response_tokens: 2048
 
 # EC2 instance tags (for infra scripts)
 instances:

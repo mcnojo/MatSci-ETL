@@ -2,17 +2,30 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 
+from shared.s3_io import put_bytes
+
 from .layout_detector import LayoutDetector, associate_captions
 
 
 class AssetExtractor:
-    """Renders PDF pages and crops detected visual elements."""
+    """Renders PDF pages and crops detected visual elements.
+
+    Every PNG is written to local scratch (fast cache for the producing worker)
+    and also published to `assets_uri_prefix` via `shared.s3_io.put_bytes`. The
+    returned URI is the durable cross-worker reference — consumers on other
+    workers (e.g. GPU chandra) reach the bytes through s3_io.get_bytes.
+
+    Local-dev mode: `assets_uri_prefix` is a filesystem path under `kb_root`,
+    so `put_bytes` writes locally and the URI is just that local path. No code
+    branches on prefix scheme.
+    """
 
     def __init__(self, pdf_path: str, paper_id: str, config: dict):
         self.pdf_path = pdf_path
         self.paper_id = paper_id
         self.config = config
         self.kb_root = Path(config["output"]["kb_root"])
+        self.assets_uri_prefix = config["output"]["assets_uri_prefix"].rstrip("/")
         self.render_dpi = config["rendering"]["dpi"]
         self.ocr_dpi = config["rendering"]["ocr_dpi"]
         self.save_pages = config["output"]["save_page_images"]
@@ -36,12 +49,19 @@ class AssetExtractor:
         pix = page.get_pixmap(matrix=mat, alpha=False)
         return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
+    def _publish(self, local_path: Path, key_suffix: str) -> str:
+        """Write local cache + publish to URI prefix; return URI."""
+        uri = f"{self.assets_uri_prefix}/{self.paper_id}/{key_suffix}"
+        body = local_path.read_bytes()
+        put_bytes(uri, body, "image/png")
+        return uri
+
     def save_page_image(self, page_1based: int) -> str:
         path = self.pages_dir / f"p{page_1based:04d}.png"
         if not path.exists():
             img = self.render_page(page_1based)
             img.save(str(path), "PNG")
-        return str(path.resolve())
+        return self._publish(path, f"pages/p{page_1based:04d}.png")
 
     def extract_page_elements(self, page_1based: int, node_id: str) -> list[dict]:
         """Run layout detection on one page and crop each detected element."""
@@ -72,8 +92,9 @@ class AssetExtractor:
             sy1 = int(content_el.y1 * scale)
             crop = ocr_page_img.crop((sx0, sy0, sx1, sy1))
 
-            asset_path = self.elements_dir / f"{element_id}.png"
-            crop.save(str(asset_path), "PNG")
+            local_asset_path = self.elements_dir / f"{element_id}.png"
+            crop.save(str(local_asset_path), "PNG")
+            asset_uri = self._publish(local_asset_path, f"elements/{element_id}.png")
 
             # Extract caption text via PyMuPDF if a caption region was detected
             caption_text = None
@@ -98,7 +119,7 @@ class AssetExtractor:
                     "x1": content_el.bbox_norm[2],
                     "y1": content_el.bbox_norm[3],
                 },
-                "asset_path": str(asset_path.resolve()),
+                "asset_uri": asset_uri,
                 "caption": caption_text,
                 "ocr_text": None,
                 "chem_entities": [],
@@ -107,15 +128,24 @@ class AssetExtractor:
 
         return results
 
-    def extract_all_pages(self, page_range: set[int]) -> dict[int, list[dict]]:
-        """Process all requested pages. Returns page_index -> element list."""
+    def extract_all_pages(
+        self, page_range: set[int],
+    ) -> tuple[dict[int, list[dict]], dict[int, str]]:
+        """Process all requested pages.
+
+        Returns (page_elements, page_image_uris) where:
+        - page_elements: page_index -> list of element dicts (each with asset_uri)
+        - page_image_uris: page_index -> URI of the rendered full-page PNG
+          (only populated when save_page_images is true)
+        """
         page_elements: dict[int, list[dict]] = {}
+        page_image_uris: dict[int, str] = {}
         for page_idx in sorted(page_range):
             if page_idx < 1 or page_idx > len(self.doc):
                 continue
             if self.save_pages:
-                self.save_page_image(page_idx)
+                page_image_uris[page_idx] = self.save_page_image(page_idx)
             elems = self.extract_page_elements(page_idx, node_id="doc")
             if elems:
                 page_elements[page_idx] = elems
-        return page_elements
+        return page_elements, page_image_uris
