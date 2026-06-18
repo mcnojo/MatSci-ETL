@@ -60,10 +60,6 @@ variable "vision_gpu_memory_utilization" {
   description = "Fraction of total GPU memory the vision unit may use. Co-hosted with the tree_llm unit, so vision + tree_llm + headroom must sum to <= 1.0."
   type        = number
   default     = 0.38
-  # Sized assuming gemma-4-E4B served at BF16 (~16GB weights — the HF default
-  # ships full BF16 even though effective params are 4.5B via Per-Layer
-  # Embeddings). If you switch tree_llm to FP8 or AWQ via tree_llm_extra_args,
-  # bump this up to 0.50+.
 }
 
 # --- co-hosted tree_llm (text) vLLM unit ------------------------------------
@@ -95,25 +91,25 @@ variable "tree_llm_hf_model_id" {
 }
 
 variable "tree_llm_extra_args" {
-  description = "Extra args appended to the tree_llm `vllm serve` command."
+  description = "Extra args appended to the tree_llm `vllm serve` command. Default `--quantization fp8` quantizes gemma weights to FP8 (e4m3) at load time. L40S has FP8 tensor cores (Ada Lovelace, sm_89) so this is hardware-native; FP8 quality loss on a 4B-class model is negligible. Halves the weight footprint (~16 GB BF16 → ~8 GB), which is what makes co-hosting comfortable on a 48 GB L40S at 32K context."
   type        = string
-  default     = ""
+  default     = "--quantization fp8"
 }
 
 variable "tree_llm_max_model_len" {
-  description = "tree_llm vLLM --max-model-len. Tree extraction prompts can include 10-20 pages; 16K balances coverage vs KV cache on gemma-4 8B."
+  description = "tree_llm vLLM --max-model-len. Bumped to 32K so long-document `generate_toc_continue` chunks (~18K chunk + accumulated prior tree) + 4K response fit cleanly. Was 16K previously; coverage was the gate. Native model context supports this comfortably."
   type        = number
-  default     = 16384
+  default     = 32768
 }
 
 variable "tree_llm_gpu_memory_utilization" {
-  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B at BF16 (~16GB weights + KV cache) on a 48GB L40S."
+  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B FP8 (~8GB weights via tree_llm_extra_args=--quantization fp8) + 32K KV cache on a 48GB L40S. Combined with vision_gpu_memory_utilization=0.38 leaves ~10.5 GB headroom for forward-pass activations and CUDA workspace — comfortable. If FP8 is disabled, bump to 0.55 to keep KV pool sufficient (and accept the tight ~3.4 GB free headroom)."
   type        = number
-  default     = 0.45
+  default     = 0.40
 }
 
 variable "instance_type" {
-  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; required headroom for co-hosting chandra (~17GB peak) + gemma-4-E4B at BF16 (~20GB peak). g6.xlarge (L4 24GB) does not fit BF16 cohost — would require FP8/int4 quantization via tree_llm_extra_args."
+  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; fits co-hosted chandra (~17 GB peak) + gemma-4-E4B at FP8 (~17 GB peak with 32K KV pool) with ~10 GB headroom. L40S has FP8 tensor cores (Ada Lovelace sm_89) so FP8 is hardware-native, not a fallback. g6.xlarge (L4 24 GB) does not co-host this stack even at FP8 — would need single-model split."
   type        = string
   default     = "g6e.xlarge"
 }
