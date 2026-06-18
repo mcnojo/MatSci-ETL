@@ -86,12 +86,11 @@ locals {
   bucket_arn                     = "arn:${data.aws_partition.current.partition}:s3:::${local.artifact_bucket}"
   batch_report_root              = "s3://${local.artifact_bucket}"
 
-  # shared/vllm SG + ports for the cross-module ingress rules below.
-  # try() so `terraform destroy` still plans when shared/vllm was already
-  # destroyed (out-of-order down). When null, the gated rules below skip.
-  vllm_security_group_id = try(data.terraform_remote_state.shared_vllm.outputs.security_group_id, null)
-  vllm_port              = try(data.terraform_remote_state.shared_vllm.outputs.vllm_port, null)
-  tree_llm_port          = try(data.terraform_remote_state.shared_vllm.outputs.tree_llm_port, null)
+  # shared/vllm's models map — one entry per vLLM instance, each carrying its
+  # SG id + port. try() so `terraform destroy` still plans when shared/vllm
+  # was already destroyed (out-of-order down). Empty map → ingress rules below
+  # for_each over nothing and skip cleanly.
+  vllm_models = try(data.terraform_remote_state.shared_vllm.outputs.models, {})
 
   cpu_queue_asg_name = "${var.name_prefix}-cpu-queue"
   gpu_queue_asg_name = "${var.name_prefix}-gpu-queue"
@@ -141,30 +140,20 @@ resource "aws_security_group_rule" "temporal_from_workers" {
   security_group_id        = local.cpu_pipeline_security_group_id
 }
 
-# Worker → vLLM ingress. Workers route to vLLM via private IP (user_data sets
-# OCR_VLLM_PREFER_PRIVATE_IP=1); without these rules the connection times out.
-# count gated on shared/vllm being applied — degrades to "no rule" when shared/vllm
-# has been destroyed (out-of-order down) instead of blowing up the plan.
-resource "aws_security_group_rule" "vllm_vision_from_workers" {
-  count                    = local.vllm_security_group_id != null ? 1 : 0
-  description              = "Batch workers to vision vLLM port"
+# Worker → vLLM ingress, one rule per model. Workers route to vLLM via private
+# IP (user_data sets OCR_VLLM_PREFER_PRIVATE_IP=1); without these rules the
+# connection times out. for_each over the models map degrades to "no rules"
+# when shared/vllm has been destroyed (out-of-order down) instead of blowing
+# up the plan.
+resource "aws_security_group_rule" "vllm_from_workers" {
+  for_each                 = local.vllm_models
+  description              = "Batch workers to vLLM ${each.key} port"
   type                     = "ingress"
-  from_port                = local.vllm_port
-  to_port                  = local.vllm_port
+  from_port                = each.value.port
+  to_port                  = each.value.port
   protocol                 = "tcp"
   source_security_group_id = aws_security_group.batch_worker.id
-  security_group_id        = local.vllm_security_group_id
-}
-
-resource "aws_security_group_rule" "vllm_tree_llm_from_workers" {
-  count                    = local.vllm_security_group_id != null ? 1 : 0
-  description              = "Batch workers to tree_llm vLLM port"
-  type                     = "ingress"
-  from_port                = local.tree_llm_port
-  to_port                  = local.tree_llm_port
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.batch_worker.id
-  security_group_id        = local.vllm_security_group_id
+  security_group_id        = each.value.security_group_id
 }
 
 resource "aws_sqs_queue" "lifecycle_events" {

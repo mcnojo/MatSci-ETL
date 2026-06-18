@@ -52,12 +52,15 @@ if $want_vllm; then
     echo "error: shared/vllm has no 'models' output (or it is empty) — apply shared/vllm first" >&2
     exit 1
   fi
-  # Parallel arrays: vllm_keys / vllm_hosts / vllm_ports / vllm_ok.
-  mapfile -t vllm_keys  < <(echo "$vllm_models_json" | jq -r 'keys[]')
-  mapfile -t vllm_hosts < <(echo "$vllm_models_json" | jq -r '.[].public_ip')
-  mapfile -t vllm_ports < <(echo "$vllm_models_json" | jq -r '.[].port')
-  vllm_ok=()
-  for _ in "${vllm_keys[@]}"; do vllm_ok+=(false); done
+  # Parallel arrays: vllm_keys / vllm_hosts / vllm_ports / vllm_ok. Built with
+  # a plain `while read` loop so this runs under macOS's bash 3.2 (no mapfile).
+  vllm_keys=(); vllm_hosts=(); vllm_ports=(); vllm_ok=()
+  while IFS=$'\t' read -r _key _host _port; do
+    vllm_keys+=("$_key")
+    vllm_hosts+=("$_host")
+    vllm_ports+=("$_port")
+    vllm_ok+=(false)
+  done < <(echo "$vllm_models_json" | jq -r 'to_entries[] | "\(.key)\t\(.value.public_ip)\t\(.value.port)"')
 fi
 
 if $want_temporal; then
