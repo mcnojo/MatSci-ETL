@@ -57,7 +57,7 @@ variable "vision_max_model_len" {
 }
 
 variable "vision_gpu_memory_utilization" {
-  description = "Fraction of total GPU memory the vision unit may use. Co-hosted with the tree_llm unit, so vision + tree_llm + headroom must sum to <= 1.0. At 0.38 + tree_llm 0.55 = 0.93 reserved, ~3.4 GB box headroom on a 48 GB L40S."
+  description = "Fraction of total GPU memory the vision unit may use. Co-hosted with the tree_llm unit, so vision + tree_llm + headroom must sum to <= 1.0. At 0.38 + tree_llm 0.50 = 0.88 reserved, ~6 GiB box headroom on a 48 GB L40S — fits vLLM 0.23's compile-time transient (~5-10 GiB above declared utilization) without crowding."
   type        = number
   default     = 0.38
 }
@@ -97,19 +97,19 @@ variable "tree_llm_extra_args" {
 }
 
 variable "tree_llm_max_model_len" {
-  description = "tree_llm vLLM --max-model-len. Bumped to 32K so long-document `generate_toc_continue` chunks (~18K chunk + accumulated prior tree) + 4K response fit cleanly. Was 16K previously; coverage was the gate. Native model context supports this comfortably."
+  description = "tree_llm vLLM --max-model-len. 24K covers `generate_toc_continue` chunks (~18K chunk + accumulated prior tree) + 4K response with ~50% margin over the original 16385-token failure case. 32K does not co-host with chandra on a single L40S: vLLM's compile-time transient (~10 GiB above declared utilization) plus gemma's 0.55 slice crowds chandra out at startup. If 24K hits a coverage gate, the path is g6e.12xlarge multi-GPU split, not bumping back to 32K on this hardware."
   type        = number
-  default     = 32768
+  default     = 24576
 }
 
 variable "tree_llm_gpu_memory_utilization" {
-  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B BF16 (~16 GB weights) + 32K KV cache on a 48 GB L40S — the 0.55 slice leaves ~10 GB for the KV pool (≈3–4 concurrent 32K seqs). Combined with vision_gpu_memory_utilization=0.38 leaves ~3.4 GB box-level headroom for forward-pass activations and CUDA workspace — tight but workable. If forward-pass OOMs surface, drop worker.max_concurrent_gpu before touching this."
+  description = "Fraction of total GPU memory the tree_llm unit may use. vision + tree_llm + headroom must sum to <= 1.0. Sized for gemma-4-E4B BF16 (~16 GB weights) + 24K KV cache on a 48 GB L40S — the 0.50 slice leaves ~8 GB for the KV pool (≈3 concurrent 24K seqs). Combined with vision_gpu_memory_utilization=0.38 reserves 42.3 GiB / 48 GiB, leaving ~6 GiB box-level headroom for vLLM's compile-time transient (cudagraph capture + weight-load buffers run ~5-10 GiB above declared utilization on 0.23.x). The previous 0.55 + 32K combo crowded chandra out at startup — do not bump back without also moving off single-GPU."
   type        = number
-  default     = 0.55
+  default     = 0.50
 }
 
 variable "instance_type" {
-  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; fits co-hosted chandra (~17 GB peak) + gemma-4-E4B BF16 (~26 GB at 0.55 with 32K KV pool) with ~3.4 GB box headroom — tight but workable. Bumping within g6e family below 12xlarge does NOT help (same single L40S, just more CPU/RAM). Real GPU bumps: g6e.12xlarge (4× L40S, multi-GPU split — requires CUDA_VISIBLE_DEVICES per systemd unit) or p5.xlarge (1× H100 80GB)."
+  description = "GPU instance type. Default g6e.xlarge = 1× L40S 48GB; fits co-hosted chandra (~17 GB peak) + gemma-4-E4B BF16 at 24K (~24 GB at 0.50) with ~6 GB box headroom for vLLM compile transient. 32K context for gemma does not co-host on a single L40S — vLLM 0.23 transient + gemma slice crowds chandra out. Bumping within g6e family below 12xlarge does NOT help (same single L40S, just more CPU/RAM). Real GPU bumps for 32K+: g6e.12xlarge (4× L40S, multi-GPU split — requires CUDA_VISIBLE_DEVICES per systemd unit) or p5.xlarge (1× H100 80GB)."
   type        = string
   default     = "g6e.xlarge"
 }
