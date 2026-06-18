@@ -34,15 +34,19 @@ async def _fake_call_llm(model, prompt, *, json_mode=False, temperature=0.0):
     if "very first content" in p or "starts in the beginning" in p:
         return LlmResult(model=model, content='{"start_begin": "no"}', finish_reason="stop")
 
-    # generate_toc_init upstream — distinctive phrase "extracting hierarchical tree structure"
+    # generate_toc_init upstream — distinctive phrase "extracting hierarchical tree structure".
+    # Wrapper {"toc": [...]} matches the prompt's response schema (object root
+    # required by OpenAI/vLLM json_object; ollama accepts it too).
     if "hierarchical tree structure" in p:
         return LlmResult(
             model=model,
             content=(
-                '[{"structure": "1", "title": "Section 1", '
+                '{"toc": ['
+                '{"structure": "1", "title": "Section 1", '
                 '"physical_index": "<physical_index_1>"},'
                 '{"structure": "2", "title": "Section 2", '
-                '"physical_index": "<physical_index_3>"}]'
+                '"physical_index": "<physical_index_3>"}'
+                ']}'
             ),
             finish_reason="stop",
         )

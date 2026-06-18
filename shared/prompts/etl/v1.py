@@ -283,6 +283,10 @@ _add_page_number_to_toc_local = _add_page_number_to_toc_upstream
 # generate_toc_init
 
 def _generate_toc_init_upstream(*, part: str) -> str:
+    # Top-level wrapper {"toc": [...]} is required by OpenAI's
+    # response_format={"type": "json_object"} semantics (vLLM honors it
+    # literally — a bare array would be rejected). Ollama's loose
+    # format: "json" accepts either shape, so wrapping is portable.
     return (
         """
     You are an expert in extracting hierarchical tree structure, your task is to generate the tree structure of the document.
@@ -295,18 +299,20 @@ def _generate_toc_init_upstream(*, part: str) -> str:
 
     For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
 
-    The response should be in the following format.
-        [
-            {
-                "structure": <structure index, "x.x.x"> (string),
-                "title": <title of the section, keep the original title>,
-                "physical_index": "<physical_index_X> (keep the format)"
-            },
+    The response must be a single JSON object with one key "toc" whose value is the array of sections:
+        {
+            "toc": [
+                {
+                    "structure": <structure index, "x.x.x"> (string),
+                    "title": <title of the section, keep the original title>,
+                    "physical_index": "<physical_index_X> (keep the format)"
+                },
+                ...
+            ]
+        }
 
-        ],
 
-
-    Directly return the final JSON structure. Do not output anything else."""
+    Directly return the final JSON object. Do not output anything else."""
         + "\nGiven text\n:" + part
     )
 
@@ -320,6 +326,7 @@ _generate_toc_init_local = _generate_toc_init_upstream
 # content because TOCs sometimes omit sections or use different titles.
 
 def _generate_toc_init_with_hint_upstream(*, part: str, toc_hint: str) -> str:
+    # See _generate_toc_init_upstream for why we wrap in {"toc": [...]}.
     return (
         """
     You are an expert in extracting hierarchical tree structure, your task is to generate the tree structure of the document.
@@ -334,18 +341,20 @@ def _generate_toc_init_with_hint_upstream(*, part: str, toc_hint: str) -> str:
 
     For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
 
-    The response should be in the following format.
-        [
-            {
-                "structure": <structure index, "x.x.x"> (string),
-                "title": <title of the section, keep the original title>,
-                "physical_index": "<physical_index_X> (keep the format)"
-            },
+    The response must be a single JSON object with one key "toc" whose value is the array of sections:
+        {
+            "toc": [
+                {
+                    "structure": <structure index, "x.x.x"> (string),
+                    "title": <title of the section, keep the original title>,
+                    "physical_index": "<physical_index_X> (keep the format)"
+                },
+                ...
+            ]
+        }
 
-        ],
 
-
-    Directly return the final JSON structure. Do not output anything else."""
+    Directly return the final JSON object. Do not output anything else."""
         + "\nTable of contents (hint):\n" + toc_hint
         + "\nGiven text\n:" + part
     )
@@ -357,6 +366,8 @@ _generate_toc_init_with_hint_local = _generate_toc_init_with_hint_upstream
 # generate_toc_continue
 
 def _generate_toc_continue_upstream(*, toc_content, part: str) -> str:
+    # See _generate_toc_init_upstream for why we wrap in {"toc": [...]}.
+    # Previous tree is shown to the model in the same shape it must respond in.
     return (
         """
     You are an expert in extracting hierarchical tree structure.
@@ -371,19 +382,21 @@ def _generate_toc_continue_upstream(*, toc_content, part: str) -> str:
 
     For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
 
-    The response should be in the following format.
-        [
-            {
-                "structure": <structure index, "x.x.x"> (string),
-                "title": <title of the section, keep the original title>,
-                "physical_index": "<physical_index_X> (keep the format)"
-            },
-            ...
-        ]
+    The response must be a single JSON object with one key "toc" whose value is the array of ADDITIONAL sections (just the new ones, not the previous tree):
+        {
+            "toc": [
+                {
+                    "structure": <structure index, "x.x.x"> (string),
+                    "title": <title of the section, keep the original title>,
+                    "physical_index": "<physical_index_X> (keep the format)"
+                },
+                ...
+            ]
+        }
 
-    Directly return the additional part of the final JSON structure. Do not output anything else."""
+    Directly return the JSON object with the additional sections. Do not output anything else."""
         + "\nGiven text\n:" + part
-        + "\nPrevious tree structure\n:" + json.dumps(toc_content, indent=2)
+        + "\nPrevious tree structure\n:" + json.dumps({"toc": toc_content}, indent=2)
     )
 
 

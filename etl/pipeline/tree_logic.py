@@ -615,9 +615,18 @@ async def process_no_toc(
     log.debug("process_no_toc: %d group(s)%s", len(group_texts),
               f" with TOC hint ({len(toc_hint)} chars)" if toc_hint else "")
 
-    toc = await generate_toc_init(group_texts[0], opt=opt, call_llm=call_llm, toc_hint=toc_hint)
+    # Prompts ask the LLM to wrap the array in {"toc": [...]} so the contract
+    # works under OpenAI-spec `response_format: json_object` (vLLM, strict —
+    # object root only) AND ollama's loose `format: "json"` (no shape
+    # constraint, accepts the wrapper). Unwrap once here; tree_logic's
+    # internal representation stays a plain list of section dicts.
+    toc = (await generate_toc_init(
+        group_texts[0], opt=opt, call_llm=call_llm, toc_hint=toc_hint
+    ))["toc"]
     for group_text in group_texts[1:]:
-        additional = await generate_toc_continue(toc, group_text, opt=opt, call_llm=call_llm)
+        additional = (await generate_toc_continue(
+            toc, group_text, opt=opt, call_llm=call_llm
+        ))["toc"]
         toc.extend(additional)
 
     log.debug("generate_toc result: %s", toc)
