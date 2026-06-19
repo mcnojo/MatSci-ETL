@@ -7,9 +7,9 @@ SSM prefix).
 
 | Resource                              | Purpose                                                       |
 | ------------------------------------- | ------------------------------------------------------------- |
-| `aws_sqs_queue.pdf_ingestion`         | PDFs land in S3 → notification → this queue → ocr-ingestion   |
+| `aws_sqs_queue.pdf_ingestion`         | PDFs land in S3 -> notification -> this queue -> ocr-ingestion   |
 | `aws_sqs_queue_policy`                | Authorizes `s3.amazonaws.com` to publish from the bucket only |
-| `aws_s3_bucket_notification`          | `s3:ObjectCreated:*` on `live/incoming/*.pdf` → SQS           |
+| `aws_s3_bucket_notification`          | `s3:ObjectCreated:*` on `live/incoming/*.pdf` -> SQS           |
 | `aws_ssm_parameter.queue_url`         | Queue URL handoff to cpu-pipeline-01 (fetched at unit start)  |
 | `aws_iam_policy.consumer` + attach    | Cross-module attach onto cpu-pipeline-01's role               |
 

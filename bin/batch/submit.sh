@@ -126,7 +126,7 @@ for p in "${pdfs[@]}"; do
 done
 
 echo
-echo "uploading manifest → s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
+echo "uploading manifest -> s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
 aws s3 cp --only-show-errors "$manifest_path" "s3://$artifact_bucket/$incoming_prefix$batch_id/manifest.json"
 
 # --- report ------------------------------------------------------------------

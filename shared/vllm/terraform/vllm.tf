@@ -101,7 +101,7 @@ resource "aws_security_group" "vllm" {
     ipv6_cidr_blocks = ["::/0"]
   }
   # No inline ingress: operator rules below are gated on operator_cidrs so
-  # the fail-closed default is real (empty → SSM-only). Worker-SG ingress is
+  # the fail-closed default is real (empty -> SSM-only). Worker-SG ingress is
   # owned by consumer modules (prod/batch, prod/live) to avoid apply-order
   # dependencies (workers don't exist yet when vllm applies).
 }
@@ -225,7 +225,7 @@ resource "aws_instance" "vllm" {
   }
 
   # Cap the silent RunInstances retry loop. Default is 10m; capacity errors
-  # surface in ≤3m here. Bounds only the EC2 state→running wait — user_data
+  # surface in ≤3m here. Bounds only the EC2 state->running wait — user_data
   # (model download, vLLM warmup) runs post-running and isn't affected.
   timeouts {
     create = "3m"

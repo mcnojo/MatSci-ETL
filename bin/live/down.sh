@@ -2,17 +2,17 @@
 # Tear the live motif down.
 #
 # Order (and why):
-#   live            destroy   →  SQS queue + S3 notification + SSM queue-URL
+#   live            destroy   ->  SQS queue + S3 notification + SSM queue-URL
 #                                param + cross-module IAM attachment + the
 #                                cross-module SG ingress rules on the vLLM SG.
 #                                MUST precede BOTH shared/vllm and shared/temporal
 #                                because both are referenced via remote_state
 #                                outputs — destroying them first leaves live
 #                                unable to even plan.
-#   shared/vllm     destroy   →  Kills the GPU box. Could go first for the
+#   shared/vllm     destroy   ->  Kills the GPU box. Could go first for the
 #                                cost saving, but live destroy is fast so the
 #                                dependency-order rule wins.
-#   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
+#   shared/temporal destroy   ->  cpu-pipeline-01 + SG + EIP + log group +
 #                                S3 VPC endpoint. SSM tree_llm keys are NOT
 #                                here anymore — they live in shared/platform
 #                                and survive nightly teardown by design.

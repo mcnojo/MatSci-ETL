@@ -1,4 +1,4 @@
-# prod/live/ — streaming SQS → Temporal service
+# prod/live/ — streaming SQS -> Temporal service
 
 Long-running service that processes PDFs as they land in S3. Optimizes for
 per-PDF latency.
@@ -38,7 +38,7 @@ python -m etl.cli --pdf etl/hybrid.pdf
 
 ```bash
 bin/live/up.sh             # terraform: shared/temporal + shared/vllm + live
-bin/live/submit.sh <pdf>…  # uploads to live/incoming/, S3 fires SQS → consumer
+bin/live/submit.sh <pdf>…  # uploads to live/incoming/, S3 fires SQS -> consumer
 bin/live/down.sh
 ```
 

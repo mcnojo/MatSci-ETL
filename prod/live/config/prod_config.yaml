@@ -34,7 +34,7 @@ pipeline_overrides:
     kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
     save_page_images: false         # no need to persist full-page renders in prod
     # AssetExtractor publishes element PNGs (and page PNGs when save_page_images=true)
-    # here. Cross-worker reads (CPU→GPU chandra) go through shared.s3_io.get_bytes,
+    # here. Cross-worker reads (CPU->GPU chandra) go through shared.s3_io.get_bytes,
     # which routes s3:// transparently. Same bucket as storage.s3.bucket below.
     assets_uri_prefix: "s3://chem-lit-artifacts/assets"
 

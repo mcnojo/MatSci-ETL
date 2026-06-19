@@ -49,9 +49,9 @@ def _load_batch_cfg(path: str) -> dict:
 
 @click.group()
 @click.option("--temporal-address", default=None,
-              help="Temporal gRPC endpoint. Resolution order: flag → "
-                   "TEMPORAL_ADDRESS env → shared/temporal terraform output "
-                   "cpu_pipeline_public_ip:7233 → localhost:7233.")
+              help="Temporal gRPC endpoint. Resolution order: flag -> "
+                   "TEMPORAL_ADDRESS env -> shared/temporal terraform output "
+                   "cpu_pipeline_public_ip:7233 -> localhost:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--batch-config", default="prod/batch/config/batch_config.yaml",
               show_default=True,
@@ -158,7 +158,7 @@ async def _run_live(
         ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
     )
     console.print(
-        f"Building live report [{window.since.isoformat()} → {window.until.isoformat()}] "
+        f"Building live report [{window.since.isoformat()} -> {window.until.isoformat()}] "
         f"in [cyan]{resolved_region}[/cyan]"
     )
     report = await build_live_report(
@@ -167,7 +167,7 @@ async def _run_live(
     )
     uris = write_live_report(report, resolved_out)
     _print_summary(
-        f"window={window.since.isoformat()} → {window.until.isoformat()}",
+        f"window={window.since.isoformat()} -> {window.until.isoformat()}",
         f"items={report.items_total} ok={report.items_succeeded} fail={report.items_failed}",
         report.flags, uris,
     )
@@ -222,7 +222,7 @@ async def _run_compare(
     now = datetime.now(timezone.utc)
     window = LiveWindow(since=now - live_delta, until=now)
     console.print(
-        f"Building live side for window {window.since.isoformat()} → {window.until.isoformat()}"
+        f"Building live side for window {window.since.isoformat()} -> {window.until.isoformat()}"
     )
     live_report = await build_live_report(
         client=client, window=window, region=resolved_region,

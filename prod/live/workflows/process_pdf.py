@@ -25,10 +25,14 @@ from temporalio.exceptions import ApplicationError
 with workflow.unsafe.imports_passed_through():
     from etl.pipeline.cpu_activities import (
         AssignElementsInput,
+        AttachOcrInput,
         ExtractAssetsInput,
         FinalizeInput,
         LoadPagesInput,
+        OcrTarget,
+        OcrUpdate,
         assign_elements_activity,
+        attach_ocr_activity,
         extract_assets_activity,
         finalize_activity,
         load_pages_activity,
@@ -172,19 +176,40 @@ class ProcessPdfWorkflow:
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
-        page_elements = assets_out.page_elements
+        page_elements_uri = assets_out.page_elements_uri
         page_image_uris = assets_out.page_image_uris
+        ocr_targets = assets_out.ocr_targets
 
-        # Stage 3: Per-image Chandra OCR (GPU) — fan out
-        if config["enrichment"]["run_ocr"]:
-            await self._enrich_ocr(page_elements, config, summary, gpu_q)
+        # Stage 3: Per-image Chandra OCR (GPU) — fan out. Returns small updates
+        # the workflow accumulates in memory; the page_elements dict itself
+        # never round-trips through workflow history.
+        if config["enrichment"]["run_ocr"] and ocr_targets:
+            ocr_updates = await self._enrich_ocr(ocr_targets, config, summary, gpu_q)
 
-        # Stage 4: Assign elements to tree (CPU)
+            # Stage 3.5: Bridge activity — apply OCR updates to the dict on S3
+            # and produce the enriched URI consumed by assign_elements. Workflow
+            # can't write to S3 (deterministic replay), so the merge runs here.
+            attach_out = await workflow.execute_activity(
+                attach_ocr_activity,
+                AttachOcrInput(
+                    page_elements_uri=page_elements_uri,
+                    ocr_updates=ocr_updates,
+                    document_id=input.document_id,
+                    config=config,
+                ),
+                task_queue=cpu_q,
+                start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+                heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+            page_elements_uri = attach_out.page_elements_uri
+
+        # Stage 4: Assign elements to tree (CPU). Reads page_elements from S3.
         assign_out = await workflow.execute_activity(
             assign_elements_activity,
             AssignElementsInput(
                 tree=tree,
-                page_elements=page_elements,
+                page_elements_uri=page_elements_uri,
                 page_image_uris=page_image_uris,
                 pdf_path=input.pdf_path,
                 document_id=input.document_id,
@@ -233,22 +258,18 @@ class ProcessPdfWorkflow:
         return call
 
     async def _enrich_ocr(
-        self, page_elements: dict[int, list[dict]], config: dict, summary: dict, gpu_q: str,
-    ) -> None:
+        self, targets: list[OcrTarget], config: dict, summary: dict, gpu_q: str,
+    ) -> list[OcrUpdate]:
+        """Fan out chandra OCR per target; return updates for attach_ocr to apply.
+
+        Workflow accumulates results in-memory then hands them to attach_ocr in
+        one shot, so the dict on S3 is the only place mutations land.
+        """
         vision_cfg = config["vision_server"]
         ocr_model_label = f"ocr:{vision_cfg['ocr_model']}"
+        updates: list[OcrUpdate] = []
 
-        targets: list[tuple[int, int]] = []
-        for page_idx, elements in page_elements.items():
-            for elem_idx, elem in enumerate(elements):
-                if elem.get("asset_uri"):
-                    targets.append((page_idx, elem_idx))
-
-        if not targets:
-            return
-
-        async def call_one(page_idx: int, elem_idx: int):
-            elem = page_elements[page_idx][elem_idx]
+        async def call_one(target: OcrTarget):
             try:
                 result = await workflow.execute_activity(
                     chandra_vision_call_activity,
@@ -256,7 +277,7 @@ class ProcessPdfWorkflow:
                         base_url=vision_cfg["base_url"],
                         api_key=vision_cfg["api_key"],
                         model=vision_cfg["ocr_model"],
-                        image_uri=elem["asset_uri"],
+                        image_uri=target.asset_uri,
                         prompt=CHANDRA_OCR_LAYOUT_PROMPT,
                     ),
                     task_queue=gpu_q,
@@ -265,11 +286,21 @@ class ProcessPdfWorkflow:
                     retry_policy=GPU_RETRY_POLICY,
                 )
             except Exception as exc:
-                elem["ocr_text"] = f"ERROR: {exc}"
+                updates.append(OcrUpdate(
+                    element_id=target.element_id,
+                    page_idx=target.page_idx,
+                    elem_idx=target.elem_idx,
+                    ocr_text=f"ERROR: {exc}",
+                ))
                 merge_call_record(summary, ocr_model_label, errored=True)
                 return
-            elem["ocr_text"] = result.content
-            elem["ocr_parsed"] = parse_chandra(result.content)
+            updates.append(OcrUpdate(
+                element_id=target.element_id,
+                page_idx=target.page_idx,
+                elem_idx=target.elem_idx,
+                ocr_text=result.content,
+                ocr_parsed=parse_chandra(result.content),
+            ))
             merge_call_record(
                 summary, ocr_model_label,
                 started_at=result.started_at,
@@ -279,8 +310,10 @@ class ProcessPdfWorkflow:
             )
 
         async with asyncio.TaskGroup() as tg:
-            for page_idx, elem_idx in targets:
-                tg.create_task(call_one(page_idx, elem_idx))
+            for target in targets:
+                tg.create_task(call_one(target))
+
+        return updates
 
     async def _resummarize(
         self, tree, config: dict, summary: dict, gpu_q: str,

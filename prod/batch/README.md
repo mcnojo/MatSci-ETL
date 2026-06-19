@@ -9,7 +9,7 @@ latency.
 ```
 prod/batch/
 ├── cli.py                              # operator entry: submit / status / cancel / report / wait-for-workers
-├── planner.py                          # manifest → shards (pure)
+├── planner.py                          # manifest -> shards (pure)
 ├── artifacts.py                        # S3 manifest read, report write
 ├── models.py                           # BatchManifest, BatchItem
 ├── reports/                            # end-of-batch hardware + workflow report
@@ -22,7 +22,7 @@ prod/batch/
 │       ├── write_report.py
 │       ├── scale_fleet.py              # scale_fleet_up + scale_fleet_down
 │       ├── await_pollers.py            # blocks until workers register
-│       └── build_report.py             # Temporal + CloudWatch → report.json/md
+│       └── build_report.py             # Temporal + CloudWatch -> report.json/md
 ├── config/
 │   └── batch_config.yaml
 └── scripts/
@@ -68,7 +68,7 @@ python -m prod.batch.cli cancel <batch_id>
 python -m prod.batch.cli wait-for-workers
 ```
 
-The CLI is the only entry point — there is no S3 → Lambda auto-trigger.
+The CLI is the only entry point — there is no S3 -> Lambda auto-trigger.
 Submission is explicit so teardown stays fast (no Lambda VPC ENIs to wait
 on during `down.sh`).
 
@@ -93,7 +93,7 @@ python -m tests.integration.test_batch_e2e
 ```
 
 The integration test submits a 1-PDF manifest pointing at `etl/hybrid.pdf`,
-runs it end-to-end through `BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow`
+runs it end-to-end through `BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow`
 with `--no-manage-fleet` semantics (fleet field unset), and asserts the
 summary report files are written. It skips politely if Temporal or vLLM is
 unavailable.

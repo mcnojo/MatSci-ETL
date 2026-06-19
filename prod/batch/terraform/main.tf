@@ -88,7 +88,7 @@ locals {
 
   # shared/vllm's models map — one entry per vLLM instance, each carrying its
   # SG id + port. try() so `terraform destroy` still plans when shared/vllm
-  # was already destroyed (out-of-order down). Empty map → ingress rules below
+  # was already destroyed (out-of-order down). Empty map -> ingress rules below
   # for_each over nothing and skip cleanly.
   vllm_models = try(data.terraform_remote_state.shared_vllm.outputs.models, {})
 
@@ -140,7 +140,7 @@ resource "aws_security_group_rule" "temporal_from_workers" {
   security_group_id        = local.cpu_pipeline_security_group_id
 }
 
-# Worker → vLLM ingress, one rule per model. Workers route to vLLM via private
+# Worker -> vLLM ingress, one rule per model. Workers route to vLLM via private
 # IP (user_data sets OCR_VLLM_PREFER_PRIVATE_IP=1); without these rules the
 # connection times out. for_each over the models map degrades to "no rules"
 # when shared/vllm has been destroyed (out-of-order down) instead of blowing

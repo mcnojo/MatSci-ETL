@@ -13,8 +13,8 @@ the happy path.
 
 | Motif    | When to use                                         | What submit does                          |
 | -------- | --------------------------------------------------- | ----------------------------------------- |
-| `batch`  | bounded jobs of 10–10,000+ PDFs, throughput-tuned  | upload PDFs + manifest → Lambda fires    |
-| `live`   | bursty arrivals, per-PDF latency-sensitive          | upload PDF → S3→SQS→consumer fires       |
+| `batch`  | bounded jobs of 10–10,000+ PDFs, throughput-tuned  | upload PDFs + manifest -> Lambda fires    |
+| `live`   | bursty arrivals, per-PDF latency-sensitive          | upload PDF -> S3->SQS->consumer fires       |
 | `dev`    | hybrid local-dev (Mac drives, AWS hosts vLLM only)  | runs `etl/cli.py` from Mac as usual       |
 
 ---
@@ -143,7 +143,7 @@ bin/
 │   └── down.sh               # shared/vllm + batch + shared/temporal destroy (platform untouched)
 ├── live/
 │   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + live + wait
-│   ├── submit.sh             # upload PDFs to live/incoming/ (S3 → SQS fires)
+│   ├── submit.sh             # upload PDFs to live/incoming/ (S3 -> SQS fires)
 │   └── down.sh               # shared/vllm + live + shared/temporal destroy (platform untouched)
 └── dev/
     ├── up_vllm.sh            # shared/vllm only, env_tag=dev

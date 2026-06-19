@@ -19,7 +19,7 @@ echo "[bootstrap] dnf install"
 # doclayout-yolo) loads libxcb.so.1 + libGL.so.1 at `import cv2` even when
 # invoked headlessly. AL2023 base AMI ships neither. cpu-pipeline-01 runs
 # both the live worker (registers ProcessPdfWorkflow) and the batch control
-# worker (registers BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow),
+# worker (registers BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow),
 # so it always loads the CPU activities chain and needs these libs.
 dnf -y update
 dnf -y install \

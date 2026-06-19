@@ -22,7 +22,7 @@ data "aws_region" "current" {}
 data "aws_partition" "current" {}
 
 # shared/temporal owns the artifact bucket + cpu-pipeline-01 + its IAM role.
-# We read both: the bucket name/ARN for the S3 → SQS notification permission,
+# We read both: the bucket name/ARN for the S3 -> SQS notification permission,
 # and the role name for cross-module SQS + SSM grants attached to the consumer
 # that already runs on cpu-pipeline-01.
 data "terraform_remote_state" "shared_temporal" {
@@ -36,7 +36,7 @@ data "terraform_remote_state" "shared_temporal" {
   }
 }
 
-# shared/vllm owns the prod vLLM box's SG. We attach cpu_pipeline → vLLM
+# shared/vllm owns the prod vLLM box's SG. We attach cpu_pipeline -> vLLM
 # ingress here so the live worker on cpu-pipeline-01 can reach the vision
 # and tree_llm units via the private IP path.
 data "terraform_remote_state" "shared_vllm" {
@@ -59,12 +59,12 @@ locals {
 
   # shared/vllm's models map — one entry per vLLM instance, each carrying its
   # SG id + port. try() so `terraform destroy` still plans when shared/vllm
-  # was already destroyed (out-of-order down). Empty map → for_each below
+  # was already destroyed (out-of-order down). Empty map -> for_each below
   # creates no rules and skips cleanly.
   vllm_models = try(data.terraform_remote_state.shared_vllm.outputs.models, {})
 }
 
-# cpu-pipeline-01 → vLLM ingress, one rule per model. Worker + live consumer
+# cpu-pipeline-01 -> vLLM ingress, one rule per model. Worker + live consumer
 # both call vLLM via private IP from this box; without these rules connect_tcp
 # times out.
 resource "aws_security_group_rule" "vllm_from_cpu_pipeline" {

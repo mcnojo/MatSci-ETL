@@ -21,10 +21,10 @@ Same shape, different scope:
 - **Items**: total, succeeded, failed (counted from `ProcessPdfWorkflow` records)
 - **Workflows**: per workflow_type — count, success, fail, duration p50/p95/max
 - **Activities**: per activity_type — count, success, fail, retries,
-  start→close latency, schedule→close latency (queue + execute)
-- **Hardware** (per instance, from CWAgent → `OCR/Batch/Worker` or `OCR/Live/Worker`):
+  start->close latency, schedule->close latency (queue + execute)
+- **Hardware** (per instance, from CWAgent -> `OCR/Batch/Worker` or `OCR/Live/Worker`):
   CPU active %, memory %, worker-process CPU %, worker RSS, net bytes/sec
-- **GPU** (per vLLM instance, from the nvidia-smi sidecar → `OCR/vLLM/GPU`):
+- **GPU** (per vLLM instance, from the nvidia-smi sidecar -> `OCR/vLLM/GPU`):
   utilization %, memory used MiB, total VRAM
 - **Flags**: human-readable anomalies (activity failures, retries, long-tail
   p99/p50 ratios, CPU/memory saturation)
@@ -35,7 +35,7 @@ Two-column "Live | Batch" tables with delta + ratio per metric:
 
 - **Items / throughput**: items, error rate, items/hr
 - **`ProcessPdfWorkflow` duration**: p50/p95/p99/max
-- **Per-activity p50, p95** start→close: joined on `activity_type` (left-outer)
+- **Per-activity p50, p95** start->close: joined on `activity_type` (left-outer)
 - **Hardware**: CPU %, memory %, worker CPU %, net sent/recv KiB/s, instance count
 - **GPU**: utilization %, memory MiB, instance count
 

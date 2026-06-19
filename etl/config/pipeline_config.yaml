@@ -45,7 +45,7 @@ vision_server:
 tree:
   toc_check_pages: 25
   max_pages_per_node: 10
-  max_tokens_per_node: 48000          # group-text input budget. Larger chunks → fewer fragmentation seams between tree nodes. Budget per call: 48K chunk + accumulated TOC + ~3K prompt + 16K response ≈ 67K, well inside gemma's 128K window.
+  max_tokens_per_node: 48000          # group-text input budget. Larger chunks -> fewer fragmentation seams between tree nodes. Budget per call: 48K chunk + accumulated TOC + ~3K prompt + 16K response ≈ 67K, well inside gemma's 128K window.
   add_node_summary: true
   add_node_id: true
   add_doc_description: false
@@ -84,7 +84,7 @@ enrichment:
 storage:
   backend: "local"
   local:
-    root: "../kb"                      # relative paths anchored to this config file's dir → etl/kb
+    root: "../kb"                      # relative paths anchored to this config file's dir -> etl/kb
   s3:
     bucket: "chem-lit-artifacts"
     prefix: ""
@@ -101,6 +101,6 @@ output:
   # Where AssetExtractor publishes element + page PNGs so cross-worker consumers
   # (e.g. GPU chandra activity) can read them via shared.s3_io. In local dev this
   # is a path on disk — get_bytes/put_bytes route to the filesystem. Prod overlay
-  # replaces this with an s3:// URI so files survive the CPU→GPU machine boundary.
+  # replaces this with an s3:// URI so files survive the CPU->GPU machine boundary.
   # Relative paths are anchored at load time (shared/config_loader.py).
   assets_uri_prefix: "../kb"

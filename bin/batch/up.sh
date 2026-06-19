@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Bring the batch motif online.
 #
-#   shared/temporal apply  →  cpu-pipeline-01 (Temporal, worker, ingestion unit)
-#   shared/vllm     apply  →  vLLM box (env_tag=prod)
-#   batch           apply  →  ASGs paused at 0 (workflow scales them up on submit)
-#   wait_health            →  poll Temporal :7233 + vLLM /health
+#   shared/temporal apply  ->  cpu-pipeline-01 (Temporal, worker, ingestion unit)
+#   shared/vllm     apply  ->  vLLM box (env_tag=prod)
+#   batch           apply  ->  ASGs paused at 0 (workflow scales them up on submit)
+#   wait_health            ->  poll Temporal :7233 + vLLM /health
 #
 # Idempotent: re-runs are no-ops if nothing changed.
 #

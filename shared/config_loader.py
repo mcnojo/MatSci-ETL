@@ -75,7 +75,7 @@ def apply_prod_overlay(config: dict, overlay_path: str | Path) -> dict:
         ...
 
     pipeline_overrides is merged one level deep (section dicts get `.update(...)`d).
-    storage is replaced wholesale because prod toggles backend=local→s3 which can't
+    storage is replaced wholesale because prod toggles backend=local->s3 which can't
     be expressed as a key-merge.
 
     Single source of truth for the production-vs-dev merge: live's SQS consumer

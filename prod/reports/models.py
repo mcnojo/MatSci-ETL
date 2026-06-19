@@ -41,7 +41,7 @@ class WorkflowStats(BaseModel):
 
 
 class GpuStats(BaseModel):
-    """GPU utilization on a vLLM instance, from the nvidia-smi → CW sidecar."""
+    """GPU utilization on a vLLM instance, from the nvidia-smi -> CW sidecar."""
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     instance_id: str

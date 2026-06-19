@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Upload PDFs to the live ingestion prefix. Each upload fires the S3 → SQS
-# notification → ocr-ingestion → ProcessPdfWorkflow.
+# Upload PDFs to the live ingestion prefix. Each upload fires the S3 -> SQS
+# notification -> ocr-ingestion -> ProcessPdfWorkflow.
 #
 #   bin/live/submit.sh <file_or_folder>...
 #

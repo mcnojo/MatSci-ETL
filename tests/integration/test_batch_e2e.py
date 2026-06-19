@@ -1,7 +1,7 @@
 """End-to-end smoke test for the batch path against a local Temporal stack.
 
 This is an INTEGRATION test, not a unit test. It exercises the full path:
-  CLI submit → BatchRunWorkflow → ShardWorkflow → ProcessPdfWorkflow
+  CLI submit -> BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow
 on a 1-PDF manifest, running against your existing local Temporal
 (docker-compose) with the live worker (`make worker`) handling tasks.
 

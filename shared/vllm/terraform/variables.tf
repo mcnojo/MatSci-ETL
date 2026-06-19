@@ -124,7 +124,7 @@ variable "ami_id" {
 }
 
 variable "gpu_metrics_interval_s" {
-  description = "Period of the nvidia-smi → CloudWatch sidecar. 30s aligns with CWAgent worker resolution."
+  description = "Period of the nvidia-smi -> CloudWatch sidecar. 30s aligns with CWAgent worker resolution."
   type        = number
   default     = 30
 }

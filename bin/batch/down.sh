@@ -2,19 +2,19 @@
 # Tear the batch motif down.
 #
 # Order (and why):
-#   batch           destroy   →  ASGs + worker SG + IAM + lifecycle SQS + the
+#   batch           destroy   ->  ASGs + worker SG + IAM + lifecycle SQS + the
 #                                cross-module SG ingress rules attached to
 #                                cpu_pipeline (Temporal :7233) and the vLLM SG.
 #                                MUST precede shared/vllm and shared/temporal
 #                                because both are referenced via remote_state
 #                                outputs — destroying them first leaves batch
 #                                unable to even plan.
-#   shared/vllm     destroy   →  Kills the GPU box. Could go first for the
+#   shared/vllm     destroy   ->  Kills the GPU box. Could go first for the
 #                                cost saving, but batch is fast to destroy
 #                                (no Lambda ENIs to wait on) so the dependency-
 #                                order rule wins over the few cents of g6e
 #                                time.
-#   shared/temporal destroy   →  cpu-pipeline-01 + SG + EIP + log group +
+#   shared/temporal destroy   ->  cpu-pipeline-01 + SG + EIP + log group +
 #                                S3 VPC endpoint. SSM tree_llm keys are NOT
 #                                here anymore — they live in shared/platform
 #                                and survive nightly teardown by design.

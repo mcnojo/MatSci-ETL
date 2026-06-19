@@ -124,7 +124,7 @@ variable "root_volume_gb" {
 }
 
 variable "worker_registration_timeout_s" {
-  description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity. Plumbed into the CLI via terraform outputs. Cold-start budget: spot fulfill (~30s) + dnf update + install (~3 min) + pip install heavy CUDA wheels (~3-4 min) + worker boot (~15s). 40 min ceiling absorbs Spot variability, slow PyPI tail, and headroom for vLLM model swap on the GPU box (chandra → gemma)."
+  description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity. Plumbed into the CLI via terraform outputs. Cold-start budget: spot fulfill (~30s) + dnf update + install (~3 min) + pip install heavy CUDA wheels (~3-4 min) + worker boot (~15s). 40 min ceiling absorbs Spot variability, slow PyPI tail, and headroom for vLLM model swap on the GPU box (chandra -> gemma)."
   type        = number
   default     = 2400
 }

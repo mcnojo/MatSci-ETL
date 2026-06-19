@@ -12,7 +12,7 @@ Env knobs (each can be overridden per-call):
     OCR_VLLM_ENV_TAG            - dev | prod (default: prod)
     OCR_VLLM_PREFER_PRIVATE_IP  - 1 to return private IP (default: 0 — public)
 
-Mac-side callers (operator's laptop) leave both unset → resolves to the public
+Mac-side callers (operator's laptop) leave both unset -> resolves to the public
 IP of the prod box. Worker user-data sets PREFER_PRIVATE_IP=1 so in-VPC
 workers route over the private network.
 """

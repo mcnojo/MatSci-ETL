@@ -1,4 +1,4 @@
-"""Per-worker + per-GPU CloudWatch metrics → one StatSummary per metric per instance."""
+"""Per-worker + per-GPU CloudWatch metrics -> one StatSummary per metric per instance."""
 
 from __future__ import annotations
 

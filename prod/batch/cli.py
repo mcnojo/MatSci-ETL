@@ -63,9 +63,9 @@ _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
                    "defaults (vllm endpoints, prod paths). Pass '' to skip the "
                    "overlay for docker-compose dev runs.")
 @click.option("--temporal-address", default=None,
-              help="Temporal gRPC endpoint. Resolution order: flag → "
-                   "TEMPORAL_ADDRESS env → shared/temporal terraform output "
-                   "cpu_pipeline_public_ip:7233 → localhost:7233.")
+              help="Temporal gRPC endpoint. Resolution order: flag -> "
+                   "TEMPORAL_ADDRESS env -> shared/temporal terraform output "
+                   "cpu_pipeline_public_ip:7233 -> localhost:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--terraform-dir", "terraform_dir",
               default=_DEFAULT_BATCH_TF_DIR, show_default=True,
@@ -121,7 +121,7 @@ _ARTIFACT_BUCKET_OUTPUT = "artifact_bucket"
 
 
 def _terraform_outputs(module_dir: str) -> dict:
-    """Run `terraform output -json` on a module and return name→value.
+    """Run `terraform output -json` on a module and return name->value.
 
     Raises ClickException with operator-actionable guidance for the three
     realistic failure modes: terraform missing, module not initialized, motif
@@ -156,7 +156,7 @@ def _terraform_outputs(module_dir: str) -> dict:
 
 
 def _fleet_kwargs(*, manage_fleet: bool, terraform_dir: str) -> dict:
-    # manage_fleet=False → empty dict; workflow skips lifecycle (debug path).
+    # manage_fleet=False -> empty dict; workflow skips lifecycle (debug path).
     if not manage_fleet:
         return {}
     outputs = _terraform_outputs(terraform_dir)
@@ -302,7 +302,7 @@ def submit(
     dry_run: bool, wait: bool, manage_fleet: bool,
 ) -> None:
     """Start a BatchRunWorkflow for an already-uploaded batch (workflow owns
-    scale-up → fan-out → report → scale-down).
+    scale-up -> fan-out -> report -> scale-down).
 
     BATCH_ID is the identifier printed by `bin/batch/submit.sh` after upload.
     """

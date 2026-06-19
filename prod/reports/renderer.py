@@ -40,7 +40,7 @@ def render_batch_markdown(report: BatchReport) -> str:
 
 def render_live_markdown(report: LiveReport) -> str:
     lines: list[str] = []
-    lines.append(f"# Live report: {report.window.since.isoformat()} → {report.window.until.isoformat()}")
+    lines.append(f"# Live report: {report.window.since.isoformat()} -> {report.window.until.isoformat()}")
     lines.append("")
     lines.append(f"- **Window duration:** {_fmt_duration(report.window.duration_seconds)}")
     lines.append(
@@ -68,7 +68,7 @@ def render_comparison_markdown(report: ComparisonReport) -> str:
     lines.append(f"- **Generated:** {report.generated_at.isoformat()}")
     lines.append(f"- **Batch:** {b.batch_id} ({_fmt_duration(b.duration_seconds) if b.duration_seconds else '—'})")
     lines.append(
-        f"- **Live window:** {l.window.since.isoformat()} → {l.window.until.isoformat()} "
+        f"- **Live window:** {l.window.since.isoformat()} -> {l.window.until.isoformat()} "
         f"({_fmt_duration(l.window.duration_seconds)})"
     )
     lines.append("")
@@ -162,7 +162,7 @@ def _append_activities(lines: list[str], activities: list[ActivityStats]) -> Non
     lines.append("")
     lines.append(
         "| Type | Count | OK | Failed | Retries | "
-        "Start→Close p50 / p95 / max (s) | Sched→Close p50 / p95 / max (s) |"
+        "Start->Close p50 / p95 / max (s) | Sched->Close p50 / p95 / max (s) |"
     )
     lines.append("|---|---:|---:|---:|---:|---|---|")
     for a in activities:
@@ -185,7 +185,7 @@ def _append_hardware(lines: list[str], hardware: list[WorkerInstanceStats]) -> N
     for h in hardware:
         lines.append(f"### {h.instance_id}")
         if h.first_seen_at and h.last_seen_at:
-            lines.append(f"_Active: {h.first_seen_at.isoformat()} → {h.last_seen_at.isoformat()}_")
+            lines.append(f"_Active: {h.first_seen_at.isoformat()} -> {h.last_seen_at.isoformat()}_")
         lines.append("")
         lines.append("| Metric | p50 | p95 | max |")
         lines.append("|---|---:|---:|---:|")

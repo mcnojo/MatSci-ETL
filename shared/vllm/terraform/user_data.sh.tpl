@@ -50,7 +50,7 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-vllm-serve
 
-echo "[bootstrap] nvidia-smi → CloudWatch sidecar (${gpu_metrics_namespace})"
+echo "[bootstrap] nvidia-smi -> CloudWatch sidecar (${gpu_metrics_namespace})"
 # Polls nvidia-smi, publishes one MetricDatum per metric tagged with InstanceId.
 # IAM grant lives in vllm.tf::aws_iam_policy_document.vllm (cloudwatch:PutMetricData).
 cat > /usr/local/bin/ocr-gpu-metrics.sh <<'GPU_EOF'

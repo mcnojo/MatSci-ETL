@@ -53,7 +53,7 @@ def _build_workers(
 ) -> list[Worker]:
     workers: list[Worker] = []
     if "control" in lanes:
-        # BatchRunWorkflow imports ShardWorkflow → ProcessPdfWorkflow → CPU
+        # BatchRunWorkflow imports ShardWorkflow -> ProcessPdfWorkflow -> CPU
         # activities chain (torch). The control lane lives on cpu-pipeline-01,
         # which has pipeline-cpu installed.
         from prod.batch.workflows.activities import activities as batch_activities
