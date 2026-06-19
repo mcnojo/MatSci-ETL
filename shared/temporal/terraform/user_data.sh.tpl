@@ -31,9 +31,13 @@ dnf -y install \
     gcc \
     gcc-c++ \
     make \
-    amazon-cloudwatch-agent \
     libxcb \
     mesa-libGL
+
+# CWAgent install is gated on log_collection_enabled; see CWA config block below.
+if [ "${log_collection_enabled}" = "1" ]; then
+    dnf -y install amazon-cloudwatch-agent
+fi
 
 systemctl enable --now docker
 
@@ -81,6 +85,7 @@ install -m 0644 /dev/null "$WORKER_LOG"
 install -m 0644 /dev/null "$BATCH_CONTROL_LOG"
 install -m 0644 /dev/null "$INGESTION_LOG"
 
+if [ "${log_collection_enabled}" = "1" ]; then
 echo "[bootstrap] cloudwatch agent config"
 # $${aws:...} is CWAgent's runtime substitution; ${log_group_name} IS terraform's
 # and gets substituted at plan time.
@@ -168,6 +173,9 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
 CWA_EOF
 
 systemctl enable --now amazon-cloudwatch-agent
+else
+echo "[bootstrap] cloudwatch agent disabled via log_collection_enabled=0"
+fi
 
 echo "[bootstrap] systemd: ocr-temporal-stack"
 cat > /etc/systemd/system/ocr-temporal-stack.service <<UNIT_EOF

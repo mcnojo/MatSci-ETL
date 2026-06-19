@@ -21,6 +21,10 @@ import signal
 import click
 import yaml
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+)
 
 from etl.pipeline.cpu_activities import CPU_ACTIVITIES
 from etl.pipeline.gpu_activities import GPU_ACTIVITIES
@@ -31,6 +35,11 @@ from shared.temporal.task_queues import (
     WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
 )
 from shared.temporal.client import connect_temporal
+
+# regex._main initializes an RLock at module load that the sandbox blocks;
+# tiktoken.encode() lazy-imports it at workflow runtime. tiktoken is here
+# defensively against future lazy imports it might add.
+_SANDBOX_PASSTHROUGH = ("regex", "tiktoken")
 
 log = logging.getLogger("worker")
 
@@ -58,6 +67,9 @@ async def run_worker(
             task_queue=LIVE_CPU_TQ,
             workflows=[ProcessPdfWorkflow],
             activities=CPU_ACTIVITIES,
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules(*_SANDBOX_PASSTHROUGH),
+            ),
             max_concurrent_activities=max_concurrent_cpu,
             graceful_shutdown_timeout=WORKER_GRACEFUL_SHUTDOWN_TIMEOUT,
         ),

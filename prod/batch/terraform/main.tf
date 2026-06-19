@@ -97,18 +97,19 @@ locals {
 
   user_data_path = "${path.module}/user_data.sh.tpl"
   user_data_common = {
-    repo_url            = var.repo_url
-    repo_ref            = var.repo_ref
-    temporal_address    = local.temporal_address
-    temporal_namespace  = var.temporal_namespace
-    max_concurrent_cpu  = var.max_concurrent_cpu
-    max_concurrent_gpu  = var.max_concurrent_gpu
-    torch_num_threads   = var.torch_num_threads
-    aws_region          = var.region
-    artifact_bucket     = local.artifact_bucket
-    tree_llm_ssm_prefix = var.tree_llm_ssm_prefix
-    lifecycle_queue     = aws_sqs_queue.lifecycle_events.url
-    log_group_name      = aws_cloudwatch_log_group.batch_worker.name
+    repo_url               = var.repo_url
+    repo_ref               = var.repo_ref
+    temporal_address       = local.temporal_address
+    temporal_namespace     = var.temporal_namespace
+    max_concurrent_cpu     = var.max_concurrent_cpu
+    max_concurrent_gpu     = var.max_concurrent_gpu
+    torch_num_threads      = var.torch_num_threads
+    aws_region             = var.region
+    artifact_bucket        = local.artifact_bucket
+    tree_llm_ssm_prefix    = var.tree_llm_ssm_prefix
+    lifecycle_queue        = aws_sqs_queue.lifecycle_events.url
+    log_group_name         = aws_cloudwatch_log_group.batch_worker.name
+    log_collection_enabled = var.log_collection_enabled ? "1" : "0"
   }
   cpu_queue_user_data_vars = merge(local.user_data_common, { worker_role = "cpu" })
   gpu_queue_user_data_vars = merge(local.user_data_common, { worker_role = "gpu" })

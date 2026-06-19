@@ -99,3 +99,9 @@ variable "torch_num_threads" {
   type        = number
   default     = 2
 }
+
+variable "log_collection_enabled" {
+  description = "When true, the box installs + runs the CloudWatch agent and ships /var/log/ocr-*.log to the cpu_pipeline log group. When false, the agent is never installed and logs stay local (still readable via `journalctl` / SSM). Only takes effect on instance creation -- flipping requires `terraform taint aws_instance.cpu_pipeline` + apply to reroll user_data."
+  type        = bool
+  default     = true
+}

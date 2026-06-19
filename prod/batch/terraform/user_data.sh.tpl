@@ -20,8 +20,12 @@ dnf -y install \
     python3.11-pip \
     gcc \
     gcc-c++ \
-    make \
-    amazon-cloudwatch-agent
+    make
+
+# CWAgent install is gated on log_collection_enabled; see CWA config block below.
+if [ "${log_collection_enabled}" = "1" ]; then
+    dnf -y install amazon-cloudwatch-agent
+fi
 
 # Heavy CV stack and its system libs live behind --queues cpu/control. The
 # GPU role registers only HTTP activities (no torch, no cv2, no doclayout) so
@@ -75,6 +79,7 @@ chmod 600 "$SECRETS_FILE"
 echo "[bootstrap] worker log file"
 install -m 0644 /dev/null "$WORKER_LOG"
 
+if [ "${log_collection_enabled}" = "1" ]; then
 echo "[bootstrap] cloudwatch agent config"
 # \$${aws:...} is CWAgent's runtime substitution: terraform templatefile()
 # turns $$ into a literal $, then bash sees \$ and emits a literal $ — without
@@ -137,6 +142,9 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWA_EO
 CWA_EOF
 
 systemctl enable --now amazon-cloudwatch-agent
+else
+echo "[bootstrap] cloudwatch agent disabled via log_collection_enabled=0"
+fi
 
 echo "[bootstrap] systemd unit"
 cat > /etc/systemd/system/ocr-batch-worker.service <<UNIT_EOF

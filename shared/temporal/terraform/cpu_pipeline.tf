@@ -28,16 +28,17 @@ locals {
   subnet_id      = coalesce(var.subnet_id, sort(data.aws_subnets.selected.ids)[0])
   user_data_path = "${path.module}/user_data.sh.tpl"
   user_data_vars = {
-    repo_url            = var.repo_url
-    repo_ref            = var.repo_ref
-    aws_region          = var.region
-    artifact_bucket     = var.artifact_bucket
-    tree_llm_ssm_prefix = var.tree_llm_ssm_prefix
-    live_ssm_prefix     = var.live_ssm_prefix
-    log_group_name      = aws_cloudwatch_log_group.cpu_pipeline.name
-    max_concurrent_cpu  = var.max_concurrent_cpu
-    max_concurrent_gpu  = var.max_concurrent_gpu
-    torch_num_threads   = var.torch_num_threads
+    repo_url               = var.repo_url
+    repo_ref               = var.repo_ref
+    aws_region             = var.region
+    artifact_bucket        = var.artifact_bucket
+    tree_llm_ssm_prefix    = var.tree_llm_ssm_prefix
+    live_ssm_prefix        = var.live_ssm_prefix
+    log_group_name         = aws_cloudwatch_log_group.cpu_pipeline.name
+    log_collection_enabled = var.log_collection_enabled ? "1" : "0"
+    max_concurrent_cpu     = var.max_concurrent_cpu
+    max_concurrent_gpu     = var.max_concurrent_gpu
+    torch_num_threads      = var.torch_num_threads
   }
 }
 

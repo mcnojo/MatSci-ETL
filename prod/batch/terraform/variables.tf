@@ -123,6 +123,12 @@ variable "root_volume_gb" {
   default     = 50
 }
 
+variable "log_collection_enabled" {
+  description = "When true, each worker installs + runs the CloudWatch agent and ships /var/log/ocr-batch-worker.log to the batch_worker log group. When false, the agent is never installed and logs stay local on the worker (readable for the worker's lifetime via SSM until it terminates). Only takes effect on instance creation -- flipping rerolls the launch template which triggers an ASG instance refresh."
+  type        = bool
+  default     = true
+}
+
 variable "worker_registration_timeout_s" {
   description = "BatchRunInput.worker_registration_timeout_s — bound on await_pollers_activity. Plumbed into the CLI via terraform outputs. Cold-start budget: spot fulfill (~30s) + dnf update + install (~3 min) + pip install heavy CUDA wheels (~3-4 min) + worker boot (~15s). 40 min ceiling absorbs Spot variability, slow PyPI tail, and headroom for vLLM model swap on the GPU box (chandra -> gemma)."
   type        = number
