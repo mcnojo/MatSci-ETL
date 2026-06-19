@@ -38,13 +38,19 @@ from .tree_logic import count_tokens
 class LoadPagesInput(BaseModel):
     model_config = ConfigDict(frozen=True)
     pdf_path: str
+    document_id: str
+    run_id: str
+    config: dict
 
 
 class LoadPagesOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
-    page_list: list[tuple[str, int]]  # (page_text, token_count) per physical page
+    # Page text stays out of history; downstream activities read pages_uri.
+    token_counts: list[int]
     total_pages: int
     is_likely_scanned: bool
+    pages_uri: str
+    config_uri: str
 
 
 class ExtractAssetsInput(BaseModel):
@@ -200,14 +206,29 @@ def _portablize_paths(obj, anchor: Path) -> None:
 
 # Activities
 
+def _run_artifact_uri(config: dict, document_id: str, run_id: str, leaf: str) -> str:
+    # {run_id} isolates re-runs of the same document.
+    prefix = config["output"]["assets_uri_prefix"].rstrip("/")
+    return f"{prefix}/{document_id}/runs/{run_id}/{leaf}"
+
+
 @activity.defn(name="process-pdf_load-pages")
 async def load_pages_activity(input: LoadPagesInput) -> LoadPagesOutput:
     with _localized_pdf(input.pdf_path) as local_pdf:
         page_list = _get_page_tokens(local_pdf)
+
+    pages_uri = _run_artifact_uri(input.config, input.document_id, input.run_id, "pages.json")
+    put_bytes(pages_uri, json.dumps(page_list).encode("utf-8"), "application/json")
+
+    config_uri = _run_artifact_uri(input.config, input.document_id, input.run_id, "config.json")
+    put_bytes(config_uri, json.dumps(input.config).encode("utf-8"), "application/json")
+
     return LoadPagesOutput(
-        page_list=page_list,
+        token_counts=[tokens for _, tokens in page_list],
         total_pages=len(page_list),
         is_likely_scanned=_is_likely_scanned(page_list),
+        pages_uri=pages_uri,
+        config_uri=config_uri,
     )
 
 

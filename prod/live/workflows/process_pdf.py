@@ -1,19 +1,8 @@
-"""ProcessPdfWorkflow — orchestrates the PDF pipeline via Temporal.
+"""ProcessPdfWorkflow — PDF pipeline orchestrator.
 
-Stage layout:
-  0. load_pages                     coarse-grained activity (PyMuPDF)
-  1. tree build                     in-workflow orchestration via tree_logic
-                                    + llm_text_call_activity per call
-  2. extract_assets                 coarse-grained activity
-  3. chandra_vision_call            per-image activity, fanned out
-  4. assign_elements                coarse-grained activity
-  5. llm_text_call (re-summarize)   per-node activity, fanned out
-  6. finalize                       coarse-grained activity
-
-The workflow drives the tree-building orchestration itself. Every LLM call
-inside that orchestration is its own Temporal activity, providing fine-grained
-visibility, retries, and concurrency control via the worker's
-max_concurrent_activities cap.
+Stages: load_pages -> tree build (LLM fanout) -> extract_assets -> chandra OCR
+fanout -> attach_ocr -> assign_elements -> figure-aware resummarize -> finalize.
+LLM activities reference pages + config by URI staged in load_pages.
 """
 
 import asyncio
@@ -51,6 +40,7 @@ with workflow.unsafe.imports_passed_through():
     from shared.temporal.activity_models import (
         ChandraCallInput,
         LlmTextCallInput,
+        PromptSpec,
     )
     from shared.temporal.task_queues import (
         BATCH_CPU_TQ,
@@ -65,7 +55,6 @@ with workflow.unsafe.imports_passed_through():
         LIVE_GPU_TQ,
     )
     from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
-    from shared.prompts.etl import get_prompt
     from shared.schemas import TreeNode, VisualElement
 
     from .models import (
@@ -74,10 +63,7 @@ with workflow.unsafe.imports_passed_through():
     )
 
 
-# Motif self-detection: ProcessPdfWorkflow runs in both live and batch modes.
-# The caller starts it on a CPU queue (LIVE_CPU_TQ or BATCH_CPU_TQ); the
-# matching GPU sibling is derived from there. Keeps motif decisions out of
-# the input model — the queue it was scheduled on IS the motif signal.
+# The CPU queue the workflow lands on IS the motif signal — derive the GPU sibling.
 _GPU_SIBLING = {
     LIVE_CPU_TQ: LIVE_GPU_TQ,
     BATCH_CPU_TQ: BATCH_GPU_TQ,
@@ -109,8 +95,6 @@ def _format_visual_element(ve: VisualElement) -> str:
 
 @workflow.defn
 class ProcessPdfWorkflow:
-    """Durable orchestrator for the PDF -> document tree pipeline."""
-
     @workflow.run
     async def run(self, input: ProcessPdfWorkflowInput) -> ProcessPdfWorkflowOutput:
         config = input.config
@@ -125,17 +109,24 @@ class ProcessPdfWorkflow:
                 non_retryable=True,
             )
 
-        # Stage 0: Load pages (CPU)
+        # Also stages pages + config to S3 for downstream LLM activities.
         load_out = await workflow.execute_activity(
             load_pages_activity,
-            LoadPagesInput(pdf_path=input.pdf_path),
+            LoadPagesInput(
+                pdf_path=input.pdf_path,
+                document_id=input.document_id,
+                run_id=input.run_id,
+                config=config,
+            ),
             task_queue=cpu_q,
             start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
             heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
             retry_policy=DEFAULT_RETRY_POLICY,
         )
-        pages = load_out.page_list
+        token_counts = load_out.token_counts
         total_pages = load_out.total_pages
+        pages_uri = load_out.pages_uri
+        config_uri = load_out.config_uri
 
         if load_out.is_likely_scanned:
             workflow.logger.warning(
@@ -144,10 +135,10 @@ class ProcessPdfWorkflow:
             )
 
         # Stage 1: Build tree — workflow drives orchestration, every LLM call is a Temporal activity
-        opt = build_opt_from_config(config)
-        call_llm = self._make_call_llm(config, summary, gpu_q)
+        opt = build_opt_from_config(config, pages_uri)
+        call_llm = self._make_call_llm(config_uri, summary, gpu_q)
         tree = await build_tree(
-            pages, opt,
+            token_counts, opt,
             call_llm=call_llm,
             rng=workflow.random(),
             paper_id=input.document_id,
@@ -158,7 +149,6 @@ class ProcessPdfWorkflow:
         if input.skip_enrichment:
             return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
 
-        # Stage 2: Extract visual assets (CPU)
         page_ranges = [
             (n.start_index, n.end_index) for n in _flatten(tree.root_nodes)
         ]
@@ -180,15 +170,10 @@ class ProcessPdfWorkflow:
         page_image_uris = assets_out.page_image_uris
         ocr_targets = assets_out.ocr_targets
 
-        # Stage 3: Per-image Chandra OCR (GPU) — fan out. Returns small updates
-        # the workflow accumulates in memory; the page_elements dict itself
-        # never round-trips through workflow history.
         if config["enrichment"]["run_ocr"] and ocr_targets:
             ocr_updates = await self._enrich_ocr(ocr_targets, config, summary, gpu_q)
 
-            # Stage 3.5: Bridge activity — apply OCR updates to the dict on S3
-            # and produce the enriched URI consumed by assign_elements. Workflow
-            # can't write to S3 (deterministic replay), so the merge runs here.
+            # Workflow can't write to S3 (deterministic replay); merge runs as an activity.
             attach_out = await workflow.execute_activity(
                 attach_ocr_activity,
                 AttachOcrInput(
@@ -204,7 +189,6 @@ class ProcessPdfWorkflow:
             )
             page_elements_uri = attach_out.page_elements_uri
 
-        # Stage 4: Assign elements to tree (CPU). Reads page_elements from S3.
         assign_out = await workflow.execute_activity(
             assign_elements_activity,
             AssignElementsInput(
@@ -222,20 +206,17 @@ class ProcessPdfWorkflow:
         )
         tree = assign_out.tree
 
-        # Stage 5: Figure-aware re-summarization (GPU) — per-node fan out + post-order sweep
         if config.get("enrichment", {}).get("figure_aware_resummarize", True):
-            await self._resummarize(tree, config, summary, gpu_q)
+            await self._resummarize(tree, config, summary, gpu_q, config_uri)
 
-        # Stage 6: Finalize
         return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
 
-    def _make_call_llm(self, config: dict, summary: dict, gpu_q: str):
-        """Closure that schedules llm_text_call_activity and merges metrics."""
-        async def call(model, prompt, *, json_mode=False, temperature=0.0) -> LlmResult:
+    def _make_call_llm(self, config_uri: str, summary: dict, gpu_q: str):
+        async def call(model, spec: PromptSpec, *, json_mode=False, temperature=0.0) -> LlmResult:
             result = await workflow.execute_activity(
                 llm_text_call_activity,
                 LlmTextCallInput(
-                    config=config, model=model, prompt=prompt,
+                    prompt_spec=spec, config_uri=config_uri, model=model,
                     json_mode=json_mode, temperature=temperature,
                 ),
                 task_queue=gpu_q,
@@ -260,11 +241,6 @@ class ProcessPdfWorkflow:
     async def _enrich_ocr(
         self, targets: list[OcrTarget], config: dict, summary: dict, gpu_q: str,
     ) -> list[OcrUpdate]:
-        """Fan out chandra OCR per target; return updates for attach_ocr to apply.
-
-        Workflow accumulates results in-memory then hands them to attach_ocr in
-        one shot, so the dict on S3 is the only place mutations land.
-        """
         vision_cfg = config["vision_server"]
         ocr_model_label = f"ocr:{vision_cfg['ocr_model']}"
         updates: list[OcrUpdate] = []
@@ -316,7 +292,7 @@ class ProcessPdfWorkflow:
         return updates
 
     async def _resummarize(
-        self, tree, config: dict, summary: dict, gpu_q: str,
+        self, tree, config: dict, summary: dict, gpu_q: str, config_uri: str,
     ) -> None:
         text_cfg = config["tree_llm"]
         prompt_style = (text_cfg.get("prompt_style") or "local").lower()
@@ -332,16 +308,20 @@ class ProcessPdfWorkflow:
             figure_block = "\n\n".join(
                 _format_visual_element(ve) for ve in node.visual_elements
             )
-            prompt = get_prompt(
-                "figure_aware_resummarize", prompt_style,
-                title=node.title,
-                prior_summary=node.summary or "",
-                figure_block=figure_block,
+            spec = PromptSpec(
+                name="figure_aware_resummarize", style=prompt_style,
+                small_kwargs={
+                    "title": node.title,
+                    "prior_summary": node.summary or "",
+                    "figure_block": figure_block,
+                },
             )
             try:
                 result = await workflow.execute_activity(
                     llm_text_call_activity,
-                    LlmTextCallInput(config=config, model=model_strong, prompt=prompt),
+                    LlmTextCallInput(
+                        prompt_spec=spec, config_uri=config_uri, model=model_strong,
+                    ),
                     task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
@@ -376,15 +356,16 @@ class ProcessPdfWorkflow:
                 f"[{child.node_id}] {child.title}\n{child.summary or '(no summary)'}"
                 for child in node.nodes
             )
-            prompt = get_prompt(
-                "summarize_from_children", prompt_style,
-                title=node.title,
-                child_summaries=child_summaries,
+            spec = PromptSpec(
+                name="summarize_from_children", style=prompt_style,
+                small_kwargs={"title": node.title, "child_summaries": child_summaries},
             )
             try:
                 result = await workflow.execute_activity(
                     llm_text_call_activity,
-                    LlmTextCallInput(config=config, model=model_fast, prompt=prompt),
+                    LlmTextCallInput(
+                        prompt_spec=spec, config_uri=config_uri, model=model_fast,
+                    ),
                     task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
                     heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,

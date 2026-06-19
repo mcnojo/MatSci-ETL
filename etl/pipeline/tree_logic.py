@@ -1,16 +1,8 @@
-"""Pure document-tree orchestration.
+"""Pure document-tree orchestration; sandbox-safe.
 
-Public entry: `build_tree(pages, opt, *, call_llm, rng, paper_id, pdf_path)`.
-
-All LLM I/O is injected via the `call_llm` parameter, all randomness via `rng`.
-The module imports only pure stdlib + tiktoken + pydantic, so it is safe to
-run inside the Temporal workflow sandbox.
-
-Callers:
-- prod/workflows/process_pdf.py — runs inside the workflow; the call_llm
-  closure schedules `llm_text_call_activity` per call. `rng = workflow.random()`.
-- tests/test_tree_logic.py — passes an inline fake call_llm + a seeded
-  `random.Random` for reproducibility.
+LLM I/O via `call_llm`, randomness via `rng`. Page text is referenced by
+0-based index through `PromptSpec.page_kwargs` + `opt.pages_uri`; never
+inlined into activity inputs.
 """
 
 import asyncio
@@ -25,13 +17,13 @@ from typing import Protocol
 import tiktoken
 from pydantic import BaseModel, ConfigDict
 
-from shared.prompts.etl import get_prompt
 from shared.schemas import DocumentTree, TreeNode
+from shared.temporal.activity_models import PageRangeSpec, PromptSpec
+
+from .page_assembly import physical_index_overhead_tokens
 
 log = logging.getLogger("tree_logic")
 
-
-# CallLlm seam
 
 class LlmResult(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -42,30 +34,29 @@ class LlmResult(BaseModel):
 
 class CallLlm(Protocol):
     async def __call__(
-        self, model: str, prompt: str, *,
+        self, model: str, spec: PromptSpec, *,
         json_mode: bool = False, temperature: float = 0.0,
     ) -> LlmResult: ...
 
 
-# Build options
-
 class BuildOpt(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    model: str                   # strong model
-    model_fast: str              # fast model — TOC detection, verification, summary
+    model: str
+    model_fast: str
     prompt_style: str            # "local" | "upstream"
+    pages_uri: str
     toc_check_page_num: int
     max_page_num_each_node: int
     max_token_num_each_node: int
     if_add_node_id: str          # "yes" | "no"
-    if_add_node_summary: str     # "yes" | "no"
-    if_add_doc_description: str  # "yes" | "no"
+    if_add_node_summary: str
+    if_add_doc_description: str
     summary_overlap_pages: int
     verify_summaries: bool
 
 
-def build_opt_from_config(config: dict) -> BuildOpt:
+def build_opt_from_config(config: dict, pages_uri: str) -> BuildOpt:
     tree_cfg = config["tree"]
     llm_cfg = config["tree_llm"]
 
@@ -79,6 +70,7 @@ def build_opt_from_config(config: dict) -> BuildOpt:
         model=llm_cfg["model"],
         model_fast=llm_cfg.get("model_fast") or llm_cfg["model"],
         prompt_style=prompt_style,
+        pages_uri=pages_uri,
         toc_check_page_num=tree_cfg["toc_check_pages"],
         max_page_num_each_node=tree_cfg["max_pages_per_node"],
         max_token_num_each_node=tree_cfg["max_tokens_per_node"],
@@ -90,7 +82,22 @@ def build_opt_from_config(config: dict) -> BuildOpt:
     )
 
 
-# Token counting (pure tiktoken)
+def _spec(name: str, opt: BuildOpt, *, small=None, page=None) -> PromptSpec:
+    return PromptSpec(
+        name=name, style=opt.prompt_style,
+        small_kwargs=small or {}, page_kwargs=page or {},
+        pages_uri=opt.pages_uri if page else None,
+    )
+
+
+def _page(indices, *, wrap="raw", transform_dots=False,
+          overlap_pre=(), overlap_post=(), extract_section_only=False) -> PageRangeSpec:
+    return PageRangeSpec(
+        indices=list(indices), wrap=wrap, transform_dots=transform_dots,
+        overlap_pre=list(overlap_pre), overlap_post=list(overlap_post),
+        extract_section_only=extract_section_only,
+    )
+
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
@@ -100,8 +107,6 @@ def count_tokens(text: str) -> int:
         return 0
     return len(_enc.encode(text))
 
-
-# JSON helpers
 
 def _get_json_content(response: str) -> str:
     start_idx = response.find("```json")
@@ -159,8 +164,6 @@ def extract_json(content: str) -> dict | list:
         log.error("extract_json: unexpected error: %s", e)
         return {}
 
-
-# Tree-structure utilities (pure)
 
 def convert_physical_index_to_int(data):
     if isinstance(data, list):
@@ -262,31 +265,39 @@ def validate_and_truncate_physical_indices(toc, page_list_length, start_index=1)
     return toc
 
 
-def page_list_to_group_text(page_contents, token_lengths, max_tokens=10000, overlap_page=1):
-    num_tokens = sum(token_lengths)
+def page_list_to_group_indices(
+    page_indices: list[int],
+    token_counts: list[int],
+    max_tokens: int = 10000,
+    overlap_page: int = 1,
+    per_page_overhead_tokens: int = 0,
+) -> list[list[int]]:
+    # per_page_overhead models marker-wrapping cost when callers wrap with <physical_index_N>.
+    effective = [token_counts[i] + per_page_overhead_tokens for i in page_indices]
+    num_tokens = sum(effective)
     if num_tokens <= max_tokens:
-        return ["".join(page_contents)]
+        return [list(page_indices)]
 
     expected_parts = math.ceil(num_tokens / max_tokens)
     avg_tokens = math.ceil(((num_tokens / expected_parts) + max_tokens) / 2)
 
-    subsets = []
-    current_subset = []
+    groups: list[list[int]] = []
+    current: list[int] = []
     current_count = 0
 
-    for i, (content, tokens) in enumerate(zip(page_contents, token_lengths)):
-        if current_count + tokens > avg_tokens:
-            subsets.append("".join(current_subset))
-            overlap_start = max(i - overlap_page, 0)
-            current_subset = list(page_contents[overlap_start:i])
-            current_count = sum(token_lengths[overlap_start:i])
-        current_subset.append(content)
+    for k, (idx, tokens) in enumerate(zip(page_indices, effective)):
+        if current_count + tokens > avg_tokens and current:
+            groups.append(current)
+            overlap_start = max(k - overlap_page, 0)
+            current = list(page_indices[overlap_start:k])
+            current_count = sum(effective[overlap_start:k])
+        current.append(idx)
         current_count += tokens
 
-    if current_subset:
-        subsets.append("".join(current_subset))
+    if current:
+        groups.append(current)
 
-    return subsets
+    return groups
 
 
 def post_processing(structure, end_physical_index):
@@ -323,54 +334,6 @@ def structure_to_list(structure):
             nodes.extend(structure_to_list(item))
         return nodes
     return []
-
-
-def get_text_of_pdf_pages(pdf_pages, start_page, end_page):
-    return "".join(pdf_pages[i][0] for i in range(start_page - 1, end_page))
-
-
-def add_node_text(node, pdf_pages, overlap_pages: int = 0):
-    """Attach the page-range text to each node, optionally with overlap context.
-
-    When overlap_pages > 0, the node's text is wrapped:
-        <<<context-before>>>{prev N pages}
-        <<<section-content>>>{the section}
-        <<<context-after>>>{next N pages}
-    Summarizers are instructed to summarize only the section-content block.
-    """
-    if isinstance(node, dict):
-        s, e = node["start_index"], node["end_index"]
-        total = len(pdf_pages)
-        if overlap_pages > 0:
-            pre_start = max(1, s - overlap_pages)
-            post_end = min(total, e + overlap_pages)
-            pre = (get_text_of_pdf_pages(pdf_pages, pre_start, s - 1)
-                   if s > 1 and pre_start < s else "")
-            core = get_text_of_pdf_pages(pdf_pages, s, e)
-            post = (get_text_of_pdf_pages(pdf_pages, e + 1, post_end)
-                    if e < total and post_end > e else "")
-            node["text"] = (
-                f"<<<context-before>>>\n{pre}\n"
-                f"<<<section-content>>>\n{core}\n"
-                f"<<<context-after>>>\n{post}"
-            )
-        else:
-            node["text"] = get_text_of_pdf_pages(pdf_pages, s, e)
-        if "nodes" in node:
-            add_node_text(node["nodes"], pdf_pages, overlap_pages)
-    elif isinstance(node, list):
-        for item in node:
-            add_node_text(item, pdf_pages, overlap_pages)
-
-
-def remove_structure_text(data):
-    if isinstance(data, dict):
-        data.pop("text", None)
-        if "nodes" in data:
-            remove_structure_text(data["nodes"])
-    elif isinstance(data, list):
-        for item in data:
-            remove_structure_text(item)
 
 
 def remove_page_number(data):
@@ -413,20 +376,7 @@ def create_clean_structure_for_description(structure):
     return structure
 
 
-def _extract_section_content(text: str) -> str:
-    """Pull just the <<<section-content>>> block out of overlap-wrapped text."""
-    start_marker = "<<<section-content>>>"
-    end_marker = "<<<context-after>>>"
-    si = text.find(start_marker)
-    if si == -1:
-        return text
-    si += len(start_marker)
-    ei = text.find(end_marker, si)
-    return text[si:ei].strip() if ei != -1 else text[si:].strip()
-
-
 def _extract_toc_list(parsed: dict | list) -> list | None:
-    """Pull the TOC list from whatever shape the LLM returned."""
     if isinstance(parsed, list):
         return parsed
     if isinstance(parsed, dict):
@@ -440,23 +390,41 @@ def _extract_toc_list(parsed: dict | list) -> list | None:
     return None
 
 
-# TOC detection & extraction
+def _node_page_indices(node: dict) -> list[int]:
+    return list(range(node["start_index"] - 1, node["end_index"]))
 
-async def toc_detector_single_page(content: str, *, opt: BuildOpt, call_llm: CallLlm) -> str:
-    prompt = get_prompt("toc_detector_single_page", opt.prompt_style, content=content)
-    result = await call_llm(opt.model_fast, prompt, json_mode=True)
+
+def _overlap_indices(start_one_based: int, end_one_based: int,
+                     overlap_pages: int, total_pages: int) -> tuple[list[int], list[int]]:
+    if overlap_pages <= 0:
+        return [], []
+    pre_start = max(1, start_one_based - overlap_pages)
+    pre = list(range(pre_start - 1, start_one_based - 1)) if start_one_based > 1 else []
+    post_end = min(total_pages, end_one_based + overlap_pages)
+    post = list(range(end_one_based, post_end)) if end_one_based < total_pages else []
+    return pre, post
+
+
+async def toc_detector_single_page(
+    page_idx: int, *, opt: BuildOpt, call_llm: CallLlm,
+) -> str:
+    spec = _spec("toc_detector_single_page", opt,
+                 page={"content": _page([page_idx])})
+    result = await call_llm(opt.model_fast, spec, json_mode=True)
     return extract_json(result.content).get("toc_detected", "no")
 
 
-async def find_toc_pages(start_page_index, page_list, opt: BuildOpt, *, call_llm: CallLlm):
+async def find_toc_pages(
+    start_page_index: int, num_pages: int, opt: BuildOpt, *, call_llm: CallLlm,
+) -> list[int]:
     last_page_is_yes = False
-    toc_page_list = []
+    toc_page_list: list[int] = []
     i = start_page_index
 
-    while i < len(page_list):
+    while i < num_pages:
         if i >= opt.toc_check_page_num and not last_page_is_yes:
             break
-        res = await toc_detector_single_page(page_list[i][0], opt=opt, call_llm=call_llm)
+        res = await toc_detector_single_page(i, opt=opt, call_llm=call_llm)
         if res == "yes":
             toc_page_list.append(i)
             last_page_is_yes = True
@@ -467,45 +435,47 @@ async def find_toc_pages(start_page_index, page_list, opt: BuildOpt, *, call_llm
     return toc_page_list
 
 
-async def detect_page_index(toc_content: str, *, opt: BuildOpt, call_llm: CallLlm) -> str:
-    prompt = get_prompt("detect_page_index", opt.prompt_style, toc_content=toc_content)
-    result = await call_llm(opt.model_fast, prompt, json_mode=True)
+async def detect_page_index(
+    toc_page_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm,
+) -> str:
+    spec = _spec("detect_page_index", opt,
+                 page={"toc_content": _page(toc_page_indices, transform_dots=True)})
+    result = await call_llm(opt.model_fast, spec, json_mode=True)
     return extract_json(result.content).get("page_index_given_in_toc", "no")
 
 
-async def toc_extractor(page_list, toc_page_list, *, opt: BuildOpt, call_llm: CallLlm):
-    def transform_dots(text):
-        text = re.sub(r"\.{5,}", ": ", text)
-        text = re.sub(r"(?:\. ){5,}\.?", ": ", text)
-        return text
-
-    toc_content = ""
-    for idx in toc_page_list:
-        toc_content += page_list[idx][0]
-    toc_content = transform_dots(toc_content)
-    has_page_index = await detect_page_index(toc_content, opt=opt, call_llm=call_llm)
-    return {"toc_content": toc_content, "page_index_given_in_toc": has_page_index}
+async def toc_extractor(
+    toc_page_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm,
+) -> dict:
+    has_page_index = await detect_page_index(toc_page_indices, opt=opt, call_llm=call_llm)
+    return {"toc_page_indices": toc_page_indices, "page_index_given_in_toc": has_page_index}
 
 
 async def check_if_toc_transformation_is_complete(
-    content, toc, *, opt: BuildOpt, call_llm: CallLlm,
+    toc_page_indices: list[int], last_complete: str,
+    *, opt: BuildOpt, call_llm: CallLlm,
 ) -> str:
-    prompt = get_prompt(
-        "check_if_toc_transformation_is_complete", opt.prompt_style,
-        content=content, toc=toc,
+    # Template's `toc` kwarg gets the LLM's partial JSON; `content` gets the raw TOC pages.
+    spec = _spec(
+        "check_if_toc_transformation_is_complete", opt,
+        small={"toc": last_complete},
+        page={"content": _page(toc_page_indices, transform_dots=True)},
     )
-    result = await call_llm(opt.model_fast, prompt, json_mode=True)
+    result = await call_llm(opt.model_fast, spec, json_mode=True)
     return extract_json(result.content).get("completed", "no")
 
 
-async def toc_transformer(toc_content, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt("toc_transformer", opt.prompt_style, toc_content=toc_content)
-    result = await call_llm(opt.model, prompt, json_mode=True)
+async def toc_transformer(
+    toc_page_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm,
+):
+    spec = _spec("toc_transformer", opt,
+                 page={"toc_content": _page(toc_page_indices, transform_dots=True)})
+    result = await call_llm(opt.model, spec, json_mode=True)
     last_complete = result.content
     finished = result.finish_reason != "length"
 
     if_complete = await check_if_toc_transformation_is_complete(
-        toc_content, last_complete, opt=opt, call_llm=call_llm,
+        toc_page_indices, last_complete, opt=opt, call_llm=call_llm,
     )
     if if_complete == "yes" and finished:
         parsed = extract_json(last_complete)
@@ -520,12 +490,12 @@ async def toc_transformer(toc_content, *, opt: BuildOpt, call_llm: CallLlm):
         if position != -1:
             last_complete = last_complete[: position + 2]
 
-        cont_prompt = get_prompt(
-            "toc_transformer_continue", opt.prompt_style,
-            toc_content=toc_content, last_complete=last_complete,
+        cont_spec = _spec(
+            "toc_transformer_continue", opt,
+            small={"last_complete": last_complete},
+            page={"toc_content": _page(toc_page_indices, transform_dots=True)},
         )
-
-        cont_result = await call_llm(opt.model, cont_prompt, json_mode=True)
+        cont_result = await call_llm(opt.model, cont_spec, json_mode=True)
         new_complete = cont_result.content
         finished = cont_result.finish_reason != "length"
         if new_complete.startswith("```json"):
@@ -533,7 +503,7 @@ async def toc_transformer(toc_content, *, opt: BuildOpt, call_llm: CallLlm):
             last_complete += new_complete
 
         if_complete = await check_if_toc_transformation_is_complete(
-            toc_content, last_complete, opt=opt, call_llm=call_llm,
+            toc_page_indices, last_complete, opt=opt, call_llm=call_llm,
         )
         if if_complete == "yes" and finished:
             break
@@ -546,20 +516,27 @@ async def toc_transformer(toc_content, *, opt: BuildOpt, call_llm: CallLlm):
     return convert_page_to_int(toc_list)
 
 
-async def toc_index_extractor(toc, content, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt("toc_index_extractor", opt.prompt_style, toc=toc, content=content)
-    result = await call_llm(opt.model, prompt, json_mode=True)
+async def toc_index_extractor(
+    toc, content_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm,
+):
+    spec = _spec(
+        "toc_index_extractor", opt,
+        small={"toc": toc},
+        page={"content": _page(content_indices, wrap="physical_index")},
+    )
+    result = await call_llm(opt.model, spec, json_mode=True)
     return extract_json(result.content)
 
 
-# Page number assignment
-
-async def add_page_number_to_toc(part, structure, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt(
-        "add_page_number_to_toc", opt.prompt_style,
-        part=part, structure=structure,
+async def add_page_number_to_toc(
+    part_indices: list[int], structure, *, opt: BuildOpt, call_llm: CallLlm,
+):
+    spec = _spec(
+        "add_page_number_to_toc", opt,
+        small={"structure": structure},
+        page={"part": _page(part_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, prompt, json_mode=True)
+    result = await call_llm(opt.model, spec, json_mode=True)
     parsed = extract_json(result.content)
 
     for item in parsed:
@@ -567,65 +544,60 @@ async def add_page_number_to_toc(part, structure, *, opt: BuildOpt, call_llm: Ca
     return parsed
 
 
-# No-TOC tree generation
-
-async def generate_toc_init(part, *, opt: BuildOpt, call_llm: CallLlm, toc_hint=None):
+async def generate_toc_init(
+    part_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm, toc_hint=None,
+):
     if toc_hint:
-        prompt = get_prompt(
-            "generate_toc_init_with_hint", opt.prompt_style,
-            part=part, toc_hint=toc_hint,
+        spec = _spec(
+            "generate_toc_init_with_hint", opt,
+            small={"toc_hint": toc_hint},
+            page={"part": _page(part_indices, wrap="physical_index")},
         )
     else:
-        prompt = get_prompt("generate_toc_init", opt.prompt_style, part=part)
-    result = await call_llm(opt.model, prompt, json_mode=True)
+        spec = _spec(
+            "generate_toc_init", opt,
+            page={"part": _page(part_indices, wrap="physical_index")},
+        )
+    result = await call_llm(opt.model, spec, json_mode=True)
     if result.finish_reason != "length":
         return extract_json(result.content)
     raise RuntimeError(f"generate_toc_init: finish_reason={result.finish_reason}")
 
 
-async def generate_toc_continue(toc_content, part, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt(
-        "generate_toc_continue", opt.prompt_style,
-        toc_content=toc_content, part=part,
+async def generate_toc_continue(
+    toc_content, part_indices: list[int], *, opt: BuildOpt, call_llm: CallLlm,
+):
+    spec = _spec(
+        "generate_toc_continue", opt,
+        small={"toc_content": toc_content},
+        page={"part": _page(part_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, prompt, json_mode=True)
+    result = await call_llm(opt.model, spec, json_mode=True)
     if result.finish_reason != "length":
         return extract_json(result.content)
     raise RuntimeError(f"generate_toc_continue: finish_reason={result.finish_reason}")
 
 
-# TOC processing paths
-
 async def process_no_toc(
-    page_list, *, opt: BuildOpt, call_llm: CallLlm,
-    start_index=1, toc_hint=None,
+    page_indices: list[int], token_counts: list[int],
+    *, opt: BuildOpt, call_llm: CallLlm,
+    toc_hint=None,
 ):
-    page_contents = []
-    token_lengths = []
-    for page_index in range(start_index, start_index + len(page_list)):
-        text = (
-            f"<physical_index_{page_index}>\n"
-            f"{page_list[page_index - start_index][0]}\n"
-            f"<physical_index_{page_index}>\n\n"
-        )
-        page_contents.append(text)
-        token_lengths.append(count_tokens(text))
-
-    group_texts = page_list_to_group_text(page_contents, token_lengths)
-    log.debug("process_no_toc: %d group(s)%s", len(group_texts),
+    overhead = physical_index_overhead_tokens()
+    group_indices = page_list_to_group_indices(
+        page_indices, token_counts,
+        max_tokens=10000, overlap_page=1, per_page_overhead_tokens=overhead,
+    )
+    log.debug("process_no_toc: %d group(s)%s", len(group_indices),
               f" with TOC hint ({len(toc_hint)} chars)" if toc_hint else "")
 
-    # Prompts ask the LLM to wrap the array in {"toc": [...]} so the contract
-    # works under OpenAI-spec `response_format: json_object` (vLLM, strict —
-    # object root only) AND ollama's loose `format: "json"` (no shape
-    # constraint, accepts the wrapper). Unwrap once here; tree_logic's
-    # internal representation stays a plain list of section dicts.
+    # Prompts wrap the array in {"toc": [...]} for vLLM's strict json_object root requirement.
     toc = (await generate_toc_init(
-        group_texts[0], opt=opt, call_llm=call_llm, toc_hint=toc_hint
+        group_indices[0], opt=opt, call_llm=call_llm, toc_hint=toc_hint
     ))["toc"]
-    for group_text in group_texts[1:]:
+    for group in group_indices[1:]:
         additional = (await generate_toc_continue(
-            toc, group_text, opt=opt, call_llm=call_llm
+            toc, group, opt=opt, call_llm=call_llm
         ))["toc"]
         toc.extend(additional)
 
@@ -634,31 +606,23 @@ async def process_no_toc(
 
 
 async def process_toc_no_page_numbers(
-    toc_content, toc_page_list, page_list,
+    toc_page_indices: list[int], page_indices: list[int], token_counts: list[int],
     *, opt: BuildOpt, call_llm: CallLlm,
-    start_index=1,
 ):
-    toc_structured = await toc_transformer(toc_content, opt=opt, call_llm=call_llm)
+    toc_structured = await toc_transformer(toc_page_indices, opt=opt, call_llm=call_llm)
     log.debug("toc_transformer: %s", toc_structured)
 
-    page_contents = []
-    token_lengths = []
-    for page_index in range(start_index, start_index + len(page_list)):
-        text = (
-            f"<physical_index_{page_index}>\n"
-            f"{page_list[page_index - start_index][0]}\n"
-            f"<physical_index_{page_index}>\n\n"
-        )
-        page_contents.append(text)
-        token_lengths.append(count_tokens(text))
-
-    group_texts = page_list_to_group_text(page_contents, token_lengths)
-    log.debug("process_toc_no_page_numbers: %d group(s)", len(group_texts))
+    overhead = physical_index_overhead_tokens()
+    group_indices = page_list_to_group_indices(
+        page_indices, token_counts,
+        max_tokens=10000, overlap_page=1, per_page_overhead_tokens=overhead,
+    )
+    log.debug("process_toc_no_page_numbers: %d group(s)", len(group_indices))
 
     toc_with_pages = copy.deepcopy(toc_structured)
-    for group_text in group_texts:
+    for group in group_indices:
         toc_with_pages = await add_page_number_to_toc(
-            group_text, toc_with_pages, opt=opt, call_llm=call_llm,
+            group, toc_with_pages, opt=opt, call_llm=call_llm,
         )
 
     log.debug("add_page_number_to_toc: %s", toc_with_pages)
@@ -666,9 +630,9 @@ async def process_toc_no_page_numbers(
 
 
 async def process_none_page_numbers(
-    toc_items, page_list, *, opt: BuildOpt, call_llm: CallLlm, start_index=1,
+    toc_items, total_pages: int, *, opt: BuildOpt, call_llm: CallLlm, start_index=1,
 ):
-    """Fill in missing physical_index values by searching between known anchors."""
+    """Fill missing physical_index values by searching between known anchors."""
     for i, item in enumerate(toc_items):
         if "physical_index" not in item:
             prev = 0
@@ -683,21 +647,16 @@ async def process_none_page_numbers(
                     nxt = toc_items[j]["physical_index"]
                     break
 
-            page_contents = []
+            search_pages = []
             for page_index in range(prev, nxt + 1):
-                list_index = page_index - start_index
-                if 0 <= list_index < len(page_list):
-                    text = (
-                        f"<physical_index_{page_index}>\n"
-                        f"{page_list[list_index][0]}\n"
-                        f"<physical_index_{page_index}>\n\n"
-                    )
-                    page_contents.append(text)
+                li = page_index - start_index
+                if 0 <= li < total_pages:
+                    search_pages.append(li)
 
             item_copy = copy.deepcopy(item)
             item_copy.pop("page", None)
             result = await add_page_number_to_toc(
-                page_contents, item_copy, opt=opt, call_llm=call_llm,
+                search_pages, item_copy, opt=opt, call_llm=call_llm,
             )
             if (isinstance(result, list) and result
                     and isinstance(result[0].get("physical_index"), str)
@@ -749,27 +708,21 @@ def add_page_offset_to_toc_json(data, offset):
 
 
 async def process_toc_with_page_numbers(
-    toc_content, toc_page_list, page_list,
+    toc_page_indices: list[int], total_pages: int,
     *, opt: BuildOpt, call_llm: CallLlm,
     toc_check_page_num=None,
 ):
-    toc_with_pages = await toc_transformer(toc_content, opt=opt, call_llm=call_llm)
+    toc_with_pages = await toc_transformer(toc_page_indices, opt=opt, call_llm=call_llm)
     log.debug("toc_with_page_number: %s", toc_with_pages)
 
     toc_no_pages = remove_page_number(copy.deepcopy(toc_with_pages))
 
-    start_page = toc_page_list[-1] + 1
-    main_content = ""
-    end = min(start_page + (toc_check_page_num or 25), len(page_list))
-    for page_index in range(start_page, end):
-        main_content += (
-            f"<physical_index_{page_index + 1}>\n"
-            f"{page_list[page_index][0]}\n"
-            f"<physical_index_{page_index + 1}>\n\n"
-        )
+    start_page = toc_page_indices[-1] + 1
+    end = min(start_page + (toc_check_page_num or 25), total_pages)
+    main_content_indices = list(range(start_page, end))
 
     toc_with_physical = await toc_index_extractor(
-        toc_no_pages, main_content, opt=opt, call_llm=call_llm,
+        toc_no_pages, main_content_indices, opt=opt, call_llm=call_llm,
     )
     log.debug("toc_with_physical_index: %s", toc_with_physical)
 
@@ -783,64 +736,61 @@ async def process_toc_with_page_numbers(
 
     toc_with_pages = add_page_offset_to_toc_json(toc_with_pages, offset)
     toc_with_pages = await process_none_page_numbers(
-        toc_with_pages, page_list, opt=opt, call_llm=call_llm,
+        toc_with_pages, total_pages, opt=opt, call_llm=call_llm,
     )
 
     log.debug("final toc_with_page_number: %s", toc_with_pages)
     return toc_with_pages
 
 
-async def check_toc(page_list, opt: BuildOpt, *, call_llm: CallLlm):
-    # Cap TOC search to the first third of the document.
+async def check_toc(total_pages: int, opt: BuildOpt, *, call_llm: CallLlm):
+    # TOC search bounded to first third.
     capped = opt.model_copy(update={
-        "toc_check_page_num": min(opt.toc_check_page_num, max(3, len(page_list) // 3))
+        "toc_check_page_num": min(opt.toc_check_page_num, max(3, total_pages // 3))
     })
 
     toc_page_list = await find_toc_pages(
-        start_page_index=0, page_list=page_list, opt=capped, call_llm=call_llm,
+        start_page_index=0, num_pages=total_pages, opt=capped, call_llm=call_llm,
     )
     if not toc_page_list:
-        return {"toc_content": None, "toc_page_list": [], "page_index_given_in_toc": "no"}
+        return {"toc_page_indices": [], "toc_page_list": [], "page_index_given_in_toc": "no"}
 
-    toc_json = await toc_extractor(page_list, toc_page_list, opt=capped, call_llm=call_llm)
+    toc_json = await toc_extractor(toc_page_list, opt=capped, call_llm=call_llm)
     if toc_json["page_index_given_in_toc"] == "yes":
         return {
-            "toc_content": toc_json["toc_content"],
+            "toc_page_indices": toc_json["toc_page_indices"],
             "toc_page_list": toc_page_list,
             "page_index_given_in_toc": "yes",
         }
 
     current_start = toc_page_list[-1] + 1
     while (toc_json["page_index_given_in_toc"] == "no"
-           and current_start < len(page_list)
+           and current_start < total_pages
            and current_start < capped.toc_check_page_num):
         additional = await find_toc_pages(
-            start_page_index=current_start, page_list=page_list, opt=capped, call_llm=call_llm,
+            start_page_index=current_start, num_pages=total_pages,
+            opt=capped, call_llm=call_llm,
         )
         if not additional:
             break
-        additional_json = await toc_extractor(
-            page_list, additional, opt=capped, call_llm=call_llm,
-        )
+        additional_json = await toc_extractor(additional, opt=capped, call_llm=call_llm)
         if additional_json["page_index_given_in_toc"] == "yes":
             return {
-                "toc_content": additional_json["toc_content"],
+                "toc_page_indices": additional_json["toc_page_indices"],
                 "toc_page_list": additional,
                 "page_index_given_in_toc": "yes",
             }
         current_start = additional[-1] + 1
 
     return {
-        "toc_content": toc_json["toc_content"],
+        "toc_page_indices": toc_json["toc_page_indices"],
         "toc_page_list": toc_page_list,
         "page_index_given_in_toc": "no",
     }
 
 
-# Verification & correction
-
 async def check_title_appearance(
-    item, page_list, *, opt: BuildOpt, call_llm: CallLlm, start_index=1,
+    item, *, opt: BuildOpt, call_llm: CallLlm,
 ):
     title = item["title"]
     if "physical_index" not in item or item["physical_index"] is None:
@@ -848,13 +798,12 @@ async def check_title_appearance(
                 "title": title, "page_number": None}
 
     page_number = item["physical_index"]
-    page_text = page_list[page_number - start_index][0]
-
-    prompt = get_prompt(
-        "check_title_appearance", opt.prompt_style,
-        title=title, page_text=page_text,
+    spec = _spec(
+        "check_title_appearance", opt,
+        small={"title": title},
+        page={"page_text": _page([page_number - 1])},
     )
-    result = await call_llm(opt.model_fast, prompt, json_mode=True)
+    result = await call_llm(opt.model_fast, spec, json_mode=True)
     parsed = extract_json(result.content)
     answer = parsed.get("answer", "no")
     return {"list_index": item.get("list_index"), "answer": answer,
@@ -862,18 +811,19 @@ async def check_title_appearance(
 
 
 async def check_title_appearance_in_start(
-    title, page_text, *, opt: BuildOpt, call_llm: CallLlm,
-):
-    prompt = get_prompt(
-        "check_title_appearance_in_start", opt.prompt_style,
-        title=title, page_text=page_text,
+    title: str, page_idx: int, *, opt: BuildOpt, call_llm: CallLlm,
+) -> str:
+    spec = _spec(
+        "check_title_appearance_in_start", opt,
+        small={"title": title},
+        page={"page_text": _page([page_idx])},
     )
-    result = await call_llm(opt.model_fast, prompt, json_mode=True)
+    result = await call_llm(opt.model_fast, spec, json_mode=True)
     return extract_json(result.content).get("start_begin", "no")
 
 
 async def check_title_appearance_in_start_concurrent(
-    structure, page_list, *, opt: BuildOpt, call_llm: CallLlm,
+    structure, *, opt: BuildOpt, call_llm: CallLlm,
 ):
     for item in structure:
         if item.get("physical_index") is None:
@@ -883,10 +833,10 @@ async def check_title_appearance_in_start_concurrent(
     valid_items = []
     for item in structure:
         if item.get("physical_index") is not None:
-            page_text = page_list[item["physical_index"] - 1][0]
             tasks.append(
                 check_title_appearance_in_start(
-                    item["title"], page_text, opt=opt, call_llm=call_llm,
+                    item["title"], item["physical_index"] - 1,
+                    opt=opt, call_llm=call_llm,
                 )
             )
             valid_items.append(item)
@@ -902,9 +852,9 @@ async def check_title_appearance_in_start_concurrent(
 
 
 async def verify_toc(
-    page_list, list_result, *,
+    slice_length: int, list_result, *,
     opt: BuildOpt, call_llm: CallLlm, rng: random.Random,
-    start_index=1, N=None,
+    N=None,
 ):
     last_pi = None
     for item in reversed(list_result):
@@ -912,7 +862,8 @@ async def verify_toc(
             last_pi = item["physical_index"]
             break
 
-    if last_pi is None or last_pi < len(page_list) / 2:
+    # Abandon if TOC only covers the first half of the slice.
+    if last_pi is None or last_pi < slice_length / 2:
         return 0, []
 
     if N is None:
@@ -930,9 +881,7 @@ async def verify_toc(
             indexed.append(item_copy)
 
     results = await asyncio.gather(*[
-        check_title_appearance(
-            item, page_list, opt=opt, call_llm=call_llm, start_index=start_index,
-        )
+        check_title_appearance(item, opt=opt, call_llm=call_llm)
         for item in indexed
     ])
 
@@ -943,24 +892,27 @@ async def verify_toc(
 
 
 async def single_toc_item_index_fixer(
-    section_title, content, *, opt: BuildOpt, call_llm: CallLlm,
+    section_title: str, content_indices: list[int],
+    *, opt: BuildOpt, call_llm: CallLlm,
 ):
-    prompt = get_prompt(
-        "single_toc_item_index_fixer", opt.prompt_style,
-        section_title=section_title, content=content,
+    spec = _spec(
+        "single_toc_item_index_fixer", opt,
+        small={"section_title": section_title},
+        page={"content": _page(content_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, prompt, json_mode=True)
+    result = await call_llm(opt.model, spec, json_mode=True)
     parsed = extract_json(result.content)
     return convert_physical_index_to_int(parsed.get("physical_index", ""))
 
 
 async def fix_incorrect_toc(
-    toc, page_list, incorrect_results,
+    toc, slice_length: int, incorrect_results,
     *, opt: BuildOpt, call_llm: CallLlm,
     start_index=1,
 ):
+    # start_index is the 1-based physical_index of page_indices[0] (= node.start in recursion).
     incorrect_indices = {r["list_index"] for r in incorrect_results}
-    end_index = len(page_list) + start_index - 1
+    slice_end_pi = start_index + slice_length - 1
 
     async def process_item(incorrect_item):
         list_index = incorrect_item["list_index"]
@@ -976,7 +928,7 @@ async def fix_incorrect_toc(
                     prev_correct = pi
                     break
 
-        next_correct = end_index
+        next_correct = slice_end_pi
         for j in range(list_index + 1, len(toc)):
             if j not in incorrect_indices and 0 <= j < len(toc):
                 pi = toc[j].get("physical_index")
@@ -984,26 +936,19 @@ async def fix_incorrect_toc(
                     next_correct = pi
                     break
 
-        page_contents = []
+        content_indices = []
         for page_index in range(prev_correct, next_correct + 1):
-            li = page_index - start_index
-            if 0 <= li < len(page_list):
-                text = (
-                    f"<physical_index_{page_index}>\n"
-                    f"{page_list[li][0]}\n"
-                    f"<physical_index_{page_index}>\n\n"
-                )
-                page_contents.append(text)
+            if start_index <= page_index <= slice_end_pi:
+                content_indices.append(page_index - 1)
 
-        content_range = "".join(page_contents)
         pi_int = await single_toc_item_index_fixer(
-            incorrect_item["title"], content_range, opt=opt, call_llm=call_llm,
+            incorrect_item["title"], content_indices, opt=opt, call_llm=call_llm,
         )
 
         check_item = incorrect_item.copy()
         check_item["physical_index"] = pi_int
         check_result = await check_title_appearance(
-            check_item, page_list, opt=opt, call_llm=call_llm, start_index=start_index,
+            check_item, opt=opt, call_llm=call_llm,
         )
 
         return {
@@ -1034,7 +979,7 @@ async def fix_incorrect_toc(
 
 
 async def fix_incorrect_toc_with_retries(
-    toc, page_list, incorrect_results,
+    toc, slice_length: int, incorrect_results,
     *, opt: BuildOpt, call_llm: CallLlm,
     start_index=1, max_attempts=3,
 ):
@@ -1045,45 +990,47 @@ async def fix_incorrect_toc_with_retries(
         if not current_incorrect:
             break
         current_toc, current_incorrect = await fix_incorrect_toc(
-            current_toc, page_list, current_incorrect,
+            current_toc, slice_length, current_incorrect,
             opt=opt, call_llm=call_llm, start_index=start_index,
         )
 
     return current_toc, current_incorrect
 
 
-# Main orchestration
-
 async def meta_processor(
-    page_list, *,
+    page_indices: list[int], token_counts: list[int],
+    *,
     opt: BuildOpt, call_llm: CallLlm, rng: random.Random,
-    mode=None, toc_content=None, toc_page_list=None, start_index=1,
+    mode=None, toc_page_indices=None, toc_page_list=None, start_index=1,
 ):
+    # page_indices: global 0-based slice. start_index: 1-based physical_index of page_indices[0].
+    num_active = len(page_indices)
+
     if mode == "process_toc_with_page_numbers":
         toc = await process_toc_with_page_numbers(
-            toc_content, toc_page_list, page_list,
+            toc_page_indices, len(token_counts),
             opt=opt, call_llm=call_llm,
             toc_check_page_num=opt.toc_check_page_num,
         )
     elif mode == "process_toc_no_page_numbers":
         toc = await process_toc_no_page_numbers(
-            toc_content, toc_page_list, page_list,
+            toc_page_indices, page_indices, token_counts,
             opt=opt, call_llm=call_llm,
         )
     else:
         toc = await process_no_toc(
-            page_list, opt=opt, call_llm=call_llm,
-            start_index=start_index, toc_hint=toc_content,
+            page_indices, token_counts,
+            opt=opt, call_llm=call_llm, toc_hint=None,
         )
 
     toc = [item for item in toc if item.get("physical_index") is not None]
     toc = validate_and_truncate_physical_indices(
-        toc, len(page_list), start_index=start_index,
+        toc, num_active, start_index=start_index,
     )
 
     accuracy, incorrect = await verify_toc(
-        page_list, toc,
-        opt=opt, call_llm=call_llm, rng=rng, start_index=start_index,
+        num_active, toc,
+        opt=opt, call_llm=call_llm, rng=rng,
     )
 
     log.debug("meta_processor mode=%s accuracy=%.2f incorrect=%d",
@@ -1093,7 +1040,7 @@ async def meta_processor(
         return toc
     if accuracy > 0.6 and incorrect:
         toc, _ = await fix_incorrect_toc_with_retries(
-            toc, page_list, incorrect,
+            toc, num_active, incorrect,
             opt=opt, call_llm=call_llm,
             start_index=start_index, max_attempts=3,
         )
@@ -1102,16 +1049,16 @@ async def meta_processor(
     # Fallback cascade
     if mode == "process_toc_with_page_numbers":
         return await meta_processor(
-            page_list, opt=opt, call_llm=call_llm, rng=rng,
+            page_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
             mode="process_toc_no_page_numbers",
-            toc_content=toc_content, toc_page_list=toc_page_list,
+            toc_page_indices=toc_page_indices, toc_page_list=toc_page_list,
             start_index=start_index,
         )
     elif mode == "process_toc_no_page_numbers":
         return await meta_processor(
-            page_list, opt=opt, call_llm=call_llm, rng=rng,
+            page_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
             mode="process_no_toc",
-            toc_content=toc_content, start_index=start_index,
+            toc_page_indices=toc_page_indices, start_index=start_index,
         )
     else:
         log.warning(
@@ -1132,7 +1079,8 @@ _MAX_SUBDIVISION_DEPTH = 3
 
 
 async def process_large_node_recursively(
-    node, page_list, *,
+    node, token_counts: list[int],
+    *,
     opt: BuildOpt, call_llm: CallLlm, rng: random.Random,
     _depth=0,
 ):
@@ -1144,23 +1092,19 @@ async def process_large_node_recursively(
         )
         return node
 
-    # Capture parent span before any mutation. start/end are section boundaries —
-    # the overlap "cushion" used later by add_node_text() is not present here.
     parent_span = node["end_index"] - node["start_index"]
-
-    node_pages = page_list[node["start_index"] - 1: node["end_index"]]
-    token_num = sum(p[1] for p in node_pages)
+    node_indices = _node_page_indices(node)
+    token_num = sum(token_counts[i] for i in node_indices)
 
     if (parent_span > opt.max_page_num_each_node
             and token_num >= opt.max_token_num_each_node):
 
         sub_toc = await meta_processor(
-            node_pages, opt=opt, call_llm=call_llm, rng=rng,
-            mode="process_no_toc",
-            start_index=node["start_index"],
+            node_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
+            mode="process_no_toc", start_index=node["start_index"],
         )
         sub_toc = await check_title_appearance_in_start_concurrent(
-            sub_toc, page_list, opt=opt, call_llm=call_llm,
+            sub_toc, opt=opt, call_llm=call_llm,
         )
 
         valid = [item for item in sub_toc if item.get("physical_index") is not None]
@@ -1172,9 +1116,7 @@ async def process_large_node_recursively(
             node["nodes"] = post_processing(valid, node["end_index"])
             node["end_index"] = valid[0]["start_index"] if valid else node["end_index"]
 
-        # Progress check: every child's page span must be strictly smaller than
-        # the parent's original span. Stop recursing if the LLM produced a
-        # degenerate split.
+        # Stop if any child's span >= parent's — degenerate LLM split.
         if node.get("nodes"):
             stalled = [
                 c for c in node["nodes"]
@@ -1190,7 +1132,7 @@ async def process_large_node_recursively(
     if node.get("nodes"):
         await asyncio.gather(*[
             process_large_node_recursively(
-                child, page_list,
+                child, token_counts,
                 opt=opt, call_llm=call_llm, rng=rng, _depth=_depth + 1,
             )
             for child in node["nodes"]
@@ -1199,18 +1141,43 @@ async def process_large_node_recursively(
     return node
 
 
-# Summarization & doc description
+def _node_summary_page_spec(node: dict, total_pages: int, overlap_pages: int) -> PageRangeSpec:
+    indices = _node_page_indices(node)
+    pre, post = _overlap_indices(
+        node["start_index"], node["end_index"], overlap_pages, total_pages,
+    )
+    return _page(indices, overlap_pre=pre, overlap_post=post)
 
-async def generate_node_summary(node, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt("generate_node_summary", opt.prompt_style, node_text=node["text"])
-    result = await call_llm(opt.model_fast, prompt)
+
+def _node_verify_page_spec(node: dict, total_pages: int, overlap_pages: int) -> PageRangeSpec:
+    # Same span as the summary, but section-only — for fidelity checks.
+    indices = _node_page_indices(node)
+    pre, post = _overlap_indices(
+        node["start_index"], node["end_index"], overlap_pages, total_pages,
+    )
+    return _page(indices, overlap_pre=pre, overlap_post=post, extract_section_only=True)
+
+
+async def generate_node_summary(
+    node, total_pages: int, *, opt: BuildOpt, call_llm: CallLlm,
+):
+    spec = _spec(
+        "generate_node_summary", opt,
+        page={"node_text": _node_summary_page_spec(
+            node, total_pages, opt.summary_overlap_pages,
+        )},
+    )
+    result = await call_llm(opt.model_fast, spec)
     return result.content
 
 
-async def generate_summaries_for_structure(structure, *, opt: BuildOpt, call_llm: CallLlm):
+async def generate_summaries_for_structure(
+    structure, total_pages: int, *, opt: BuildOpt, call_llm: CallLlm,
+):
     nodes = structure_to_list(structure)
     summaries = await asyncio.gather(*[
-        generate_node_summary(node, opt=opt, call_llm=call_llm) for node in nodes
+        generate_node_summary(node, total_pages, opt=opt, call_llm=call_llm)
+        for node in nodes
     ])
     for node, summary in zip(nodes, summaries):
         node["summary"] = summary
@@ -1218,24 +1185,22 @@ async def generate_summaries_for_structure(structure, *, opt: BuildOpt, call_llm
 
 
 async def verify_summaries_for_structure(
-    structure, *, opt: BuildOpt, call_llm: CallLlm, max_retries: int = 1,
+    structure, total_pages: int, *, opt: BuildOpt, call_llm: CallLlm, max_retries: int = 1,
 ):
-    """Check each node's summary against its section content; re-summarize once
-    if topics are missed. Uses the fast model for verification."""
     nodes = structure_to_list(structure)
 
     async def verify_one(node):
-        if not node.get("summary") or not node.get("text"):
+        if not node.get("summary"):
             return
-        section_text = _extract_section_content(node["text"])
-        verify_prompt = get_prompt(
-            "verify_node_summary", opt.prompt_style,
-            title=node.get("title", ""),
-            section_text=section_text,
-            summary=node["summary"],
+        verify_spec = _spec(
+            "verify_node_summary", opt,
+            small={"title": node.get("title", ""), "summary": node["summary"]},
+            page={"section_text": _node_verify_page_spec(
+                node, total_pages, opt.summary_overlap_pages,
+            )},
         )
         try:
-            result = await call_llm(opt.model_fast, verify_prompt, json_mode=True)
+            result = await call_llm(opt.model_fast, verify_spec, json_mode=True)
             parsed = extract_json(result.content)
         except Exception as exc:
             log.warning(f"verify_node_summary failed for '{node.get('title')}': {exc}")
@@ -1249,14 +1214,15 @@ async def verify_summaries_for_structure(
             return
 
         for _ in range(max_retries):
-            regen_prompt = get_prompt(
-                "regenerate_summary_with_missed_topics", opt.prompt_style,
-                node_text=node["text"],
-                prior_summary=node["summary"],
-                missed_topics=missed,
+            regen_spec = _spec(
+                "regenerate_summary_with_missed_topics", opt,
+                small={"prior_summary": node["summary"], "missed_topics": missed},
+                page={"node_text": _node_summary_page_spec(
+                    node, total_pages, opt.summary_overlap_pages,
+                )},
             )
             try:
-                regen_result = await call_llm(opt.model_fast, regen_prompt)
+                regen_result = await call_llm(opt.model_fast, regen_spec)
                 node["summary"] = regen_result.content
             except Exception as exc:
                 log.warning(f"regenerate_summary failed for '{node.get('title')}': {exc}")
@@ -1267,12 +1233,11 @@ async def verify_summaries_for_structure(
 
 
 async def generate_doc_description(structure, *, opt: BuildOpt, call_llm: CallLlm):
-    prompt = get_prompt("generate_doc_description", opt.prompt_style, structure=structure)
-    result = await call_llm(opt.model, prompt)
+    spec = _spec("generate_doc_description", opt,
+                 small={"structure": structure})
+    result = await call_llm(opt.model, spec)
     return result.content
 
-
-# Public entry
 
 def _dicts_to_tree_nodes(nodes: list[dict]) -> list[TreeNode]:
     result = []
@@ -1290,7 +1255,7 @@ def _dicts_to_tree_nodes(nodes: list[dict]) -> list[TreeNode]:
 
 
 async def build_tree(
-    pages: list[tuple[str, int]],
+    token_counts: list[int],
     opt: BuildOpt,
     *,
     call_llm: CallLlm,
@@ -1298,52 +1263,48 @@ async def build_tree(
     paper_id: str,
     pdf_path: str,
 ) -> DocumentTree:
-    """Build a document tree from pre-loaded page-text + token-count tuples.
+    total_pages = len(token_counts)
+    total_tokens = sum(token_counts)
+    log.info("Pages: %d, tokens: %d", total_pages, total_tokens)
 
-    Pure orchestration — all LLM calls go through `call_llm`, all randomness
-    through `rng`. Safe to run inside the Temporal workflow sandbox.
-    """
-    total_tokens = sum(p[1] for p in pages)
-    log.info("Pages: %d, tokens: %d", len(pages), total_tokens)
-
-    check_result = await check_toc(pages, opt, call_llm=call_llm)
+    check_result = await check_toc(total_pages, opt, call_llm=call_llm)
     log.debug("check_toc_result: %s", check_result)
 
-    has_toc = (check_result.get("toc_content")
-               and check_result["toc_content"].strip())
+    has_toc = bool(check_result.get("toc_page_indices"))
+    full_indices = list(range(total_pages))
 
     if has_toc and check_result["page_index_given_in_toc"] == "yes":
         toc = await meta_processor(
-            pages, opt=opt, call_llm=call_llm, rng=rng,
+            full_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
             mode="process_toc_with_page_numbers",
             start_index=1,
-            toc_content=check_result["toc_content"],
+            toc_page_indices=check_result["toc_page_indices"],
             toc_page_list=check_result["toc_page_list"],
         )
     elif has_toc:
         toc = await meta_processor(
-            pages, opt=opt, call_llm=call_llm, rng=rng,
+            full_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
             mode="process_toc_no_page_numbers",
             start_index=1,
-            toc_content=check_result["toc_content"],
+            toc_page_indices=check_result["toc_page_indices"],
             toc_page_list=check_result["toc_page_list"],
         )
     else:
         toc = await meta_processor(
-            pages, opt=opt, call_llm=call_llm, rng=rng,
+            full_indices, token_counts, opt=opt, call_llm=call_llm, rng=rng,
             mode="process_no_toc", start_index=1,
         )
 
     toc = add_preface_if_needed(toc)
     toc = await check_title_appearance_in_start_concurrent(
-        toc, pages, opt=opt, call_llm=call_llm,
+        toc, opt=opt, call_llm=call_llm,
     )
 
     valid_toc = [item for item in toc if item.get("physical_index") is not None]
-    tree_nodes = post_processing(valid_toc, len(pages))
+    tree_nodes = post_processing(valid_toc, total_pages)
     await asyncio.gather(*[
         process_large_node_recursively(
-            node, pages, opt=opt, call_llm=call_llm, rng=rng,
+            node, token_counts, opt=opt, call_llm=call_llm, rng=rng,
         )
         for node in tree_nodes
     ])
@@ -1352,13 +1313,14 @@ async def build_tree(
         write_node_id(tree_nodes)
 
     if opt.if_add_node_summary == "yes":
-        add_node_text(tree_nodes, pages, overlap_pages=opt.summary_overlap_pages)
-        await generate_summaries_for_structure(tree_nodes, opt=opt, call_llm=call_llm)
+        await generate_summaries_for_structure(
+            tree_nodes, total_pages, opt=opt, call_llm=call_llm,
+        )
 
         if opt.verify_summaries:
-            await verify_summaries_for_structure(tree_nodes, opt=opt, call_llm=call_llm)
-
-        remove_structure_text(tree_nodes)
+            await verify_summaries_for_structure(
+                tree_nodes, total_pages, opt=opt, call_llm=call_llm,
+            )
 
     doc_description = None
     if opt.if_add_doc_description == "yes":
@@ -1375,7 +1337,7 @@ async def build_tree(
     return DocumentTree(
         paper_id=paper_id,
         pdf_path=pdf_path,
-        total_pages=len(pages),
+        total_pages=total_pages,
         doc_description=doc_description,
         root_nodes=root_nodes,
     )

@@ -1,33 +1,72 @@
-"""GPU-lane Temporal activities.
+"""GPU-lane Temporal activities — HTTP clients to vLLM, no torch / no cv2.
 
-Per-call LLM/vision HTTP activities — `llm_text_call` and `chandra_vision_call`.
-Both are HTTP clients to vLLM; no local model inference, no torch, no cv2.
-Kept in their own module so the batch GPU ASG (which only polls the GPU lane
-and registers no workflows) can install bare `pip install .` and skip the
-~3-4 GB pipeline-cpu extra entirely.
+Lives apart so the batch GPU ASG (GPU lane only, no workflow registration)
+installs bare `pip install .` and skips the ~3-4 GB pipeline-cpu extra.
 """
 
 import base64
+import json
 import time
+from collections import OrderedDict
 
 from openai import AsyncOpenAI
 from temporalio import activity
 
+from shared.prompts.etl import get_prompt
 from shared.s3_io import get_bytes
 from shared.temporal.activity_models import (
     ChandraCallInput,
     ChandraCallOutput,
     LlmTextCallInput,
     LlmTextCallOutput,
+    PromptSpec,
 )
 from shared.vllm.resolve import resolve_vllm_url
 
 from .heartbeat import await_with_heartbeats
 from .llm_calls import execute_text_call
+from .page_assembly import assemble_page_text
+
+
+# Bounded LRU — workers are long-lived and accumulate runs.
+_CACHE_MAX = 8
+_pages_cache: "OrderedDict[str, list[tuple[str, int]]]" = OrderedDict()
+_config_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _cache_get_or_load(cache: OrderedDict, key: str, loader) -> object:
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    value = loader(key)
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _CACHE_MAX:
+        cache.popitem(last=False)
+    return value
+
+
+def _load_pages(uri: str) -> list[tuple[str, int]]:
+    raw = json.loads(get_bytes(uri).decode("utf-8"))
+    return [(text, tokens) for text, tokens in raw]
+
+
+def _load_config(uri: str) -> dict:
+    return json.loads(get_bytes(uri).decode("utf-8"))
+
+
+def _render_prompt(spec: PromptSpec) -> str:
+    kwargs = dict(spec.small_kwargs)
+    if spec.page_kwargs:
+        if not spec.pages_uri:
+            raise ValueError("PromptSpec.page_kwargs requires pages_uri to be set")
+        pages = _cache_get_or_load(_pages_cache, spec.pages_uri, _load_pages)
+        for name, page_spec in spec.page_kwargs.items():
+            kwargs[name] = assemble_page_text(pages, page_spec)
+    return get_prompt(spec.name, spec.style, **kwargs)
 
 
 def _image_uri_to_b64(image_uri: str) -> str:
-    """Fetch image bytes via shared.s3_io (s3:// or local) and b64-encode."""
     return base64.b64encode(get_bytes(image_uri)).decode("utf-8")
 
 
@@ -44,9 +83,11 @@ def _openai_usage(response) -> tuple[int, int]:
 @activity.defn(name="process-pdf_llm-text-call")
 async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
     activity.heartbeat()
+    config = _cache_get_or_load(_config_cache, input.config_uri, _load_config)
+    prompt = _render_prompt(input.prompt_spec)
     result = await await_with_heartbeats(
         execute_text_call(
-            input.config, input.model, input.prompt,
+            config, input.model, prompt,
             json_mode=input.json_mode, temperature=input.temperature,
         ),
     )
@@ -64,8 +105,7 @@ async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
 @activity.defn(name="process-pdf_chandra-vision-call")
 async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOutput:
     activity.heartbeat()
-    # Resolve at activity boundary so OCR_VLLM_PREFER_PRIVATE_IP routes in-VPC
-    # workers over the private network without the CLI knowing.
+    # Resolve at boundary so OCR_VLLM_PREFER_PRIVATE_IP routes in-VPC over private IPs.
     base_url = resolve_vllm_url(input.base_url)
     b64 = _image_uri_to_b64(input.image_uri)
     client = AsyncOpenAI(base_url=base_url, api_key=input.api_key)
@@ -97,7 +137,6 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
     )
 
 
-# Registered with workers that poll the GPU lane (BATCH_GPU_TQ / LIVE_GPU_TQ).
 GPU_ACTIVITIES = [
     llm_text_call_activity,
     chandra_vision_call_activity,
