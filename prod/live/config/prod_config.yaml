@@ -31,7 +31,10 @@ storage:
 # OCR_VLLM_PREFER_PRIVATE_IP set in the worker's systemd unit.
 pipeline_overrides:
   output:
-    kb_root: "/tmp/ocr-pipeline"    # local scratch; final artifacts go to S3
+    # Final tree.json lands at {kb_root}/{document_id}/tree.json. Shared between
+    # live and batch (batch defaults --prod-overlay to this same file), so both
+    # write into s3://chem-lit-artifacts/trees/. Outside the assets/ lifecycle rule.
+    kb_root: "s3://chem-lit-artifacts/trees"
     save_page_images: false         # no need to persist full-page renders in prod
     # AssetExtractor publishes element PNGs (and page PNGs when save_page_images=true)
     # here. Cross-worker reads (CPU->GPU chandra) go through shared.s3_io.get_bytes,

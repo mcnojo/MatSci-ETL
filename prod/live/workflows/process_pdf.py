@@ -423,4 +423,7 @@ class ProcessPdfWorkflow:
     @staticmethod
     def _tree_path(input: ProcessPdfWorkflowInput, config: dict) -> str:
         kb_root = config.get("output", {}).get("kb_root", "./kb")
+        if kb_root.startswith("s3://"):
+            # Path() collapses s3:// -> s3:/ — string-join s3 URIs instead.
+            return f"{kb_root.rstrip('/')}/{input.document_id}/tree.json"
         return str(Path(kb_root) / input.document_id / "tree.json")

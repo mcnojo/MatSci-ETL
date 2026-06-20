@@ -353,13 +353,19 @@ async def assign_elements_activity(input: AssignElementsInput) -> AssignElements
 
 @activity.defn(name="process-pdf_finalize")
 async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
+    tree_data = input.tree.model_dump()
+    indent = 2 if input.pretty_print else None
+
+    if input.output_path.startswith("s3://"):
+        # s3:// URIs are absolute references; no anchor to portablize against.
+        # Tree-internal pdf_path / asset_uri values are already s3:// (prod overlay).
+        body = json.dumps(tree_data, indent=indent, ensure_ascii=False).encode("utf-8")
+        put_bytes(input.output_path, body, "application/json")
+        return FinalizeOutput(tree_path=input.output_path)
+
     tree_path = Path(input.output_path)
     tree_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tree_data = input.tree.model_dump()
     _portablize_paths(tree_data, tree_path.parent)
-
-    indent = 2 if input.pretty_print else None
     with open(tree_path, "w", encoding="utf-8") as f:
         json.dump(tree_data, f, indent=indent, ensure_ascii=False)
     return FinalizeOutput(tree_path=str(tree_path))
