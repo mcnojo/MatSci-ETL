@@ -1,33 +1,40 @@
 # prod/batch/ — bounded bulk-job processor
 
-Counterpart to `prod/live/`. Optimizes for **GPU utilization across a full
-corpus** (saturate the fleet, then tear it down) rather than per-PDF
-latency.
+Counterpart to `prod/live/`. Optimizes for GPU utilization across a corpus
+(saturate the fleet, then tear it down) rather than per-PDF latency.
 
 ## Layout
 
 ```
 prod/batch/
-├── cli.py                              # operator entry: submit / status / cancel / report / wait-for-workers
-├── planner.py                          # manifest -> shards (pure)
-├── artifacts.py                        # S3 manifest read, report write
-├── models.py                           # BatchManifest, BatchItem
-├── reports/                            # end-of-batch hardware + workflow report
-├── workflows/
-│   ├── batch_run.py                    # BatchRunWorkflow (parent — lifecycle + fan out + report)
-│   ├── shard.py                        # ShardWorkflow (child — ~50 PDFs)
-│   ├── models.py                       # BatchRunInput/Output, ShardInput/Output, ItemResult
-│   └── activities/                     # per-stage activities
-│       ├── fetch_manifest.py
-│       ├── write_report.py
-│       ├── scale_fleet.py              # scale_fleet_up + scale_fleet_down
-│       ├── await_pollers.py            # blocks until workers register
-│       └── build_report.py             # Temporal + CloudWatch -> report.json/md
-├── config/
-│   └── batch_config.yaml
-└── scripts/
-    └── user_data.sh.tpl                # worker bootstrap (rendered by terraform)
+├── cli.py             # operator entry: submit / status / cancel / wait-for-workers
+├── worker.py          # Temporal worker; --queues control,cpu,gpu (one lane per host)
+├── planner.py         # manifest -> shards (pure); S3 manifest URI convention
+├── artifacts.py       # S3 manifest read
+├── models.py          # BatchManifest, BatchItem
+├── config/batch_config.yaml
+├── terraform/         # batch ASGs (CPU + GPU) + IAM + CloudWatch; see its README
+└── workflows/
+    ├── batch_run.py   # BatchRunWorkflow (parent): scale up -> fan out -> report -> scale down
+    ├── shard.py       # ShardWorkflow (child): ~50 PDFs via ProcessPdfWorkflow children
+    ├── models.py      # BatchRunInput/Output, ShardInput/Output, ItemResult
+    └── activities/    # fetch_manifest, scale_fleet, await_pollers, write_report, build_report
 ```
+
+Per-PDF processing reuses `prod/live/workflows/process_pdf.py` (shared between
+motifs); the CPU task queue it lands on selects the GPU sibling.
+
+## Task queues
+
+`batch-control-tq` (parent + lifecycle activities, polled by an always-on
+worker on cpu-pipeline-01), `batch-cpu-tq` (shard + per-PDF CPU activities,
+batch CPU ASG), `batch-gpu-tq` (LLM + Chandra OCR, batch GPU ASG).
+
+## Workflow IDs
+
+- Parent: `batch-{batch_id}`
+- Shard:  `batch-{batch_id}-shard-{NNNN}`
+- Per-PDF: `batch-{batch_id}-pdf-{document_id}`
 
 ## Manifest
 
@@ -41,65 +48,66 @@ prod/batch/
 }
 ```
 
-`document_id` is operator-supplied (reproducible across re-runs).
+S3 layout (single source of truth in `planner.py`):
+
+```
+s3://<artifact_bucket>/batches/incoming/<batch_id>/manifest.json
+s3://<artifact_bucket>/batches/incoming/<batch_id>/pdfs/<document_id>.pdf
+```
 
 ## CLI
 
-`bin/batch/submit.sh <folder>` uploads PDFs + manifest and prints the
-`batch_id` plus the exact command to start the workflow. The CLI start step
-is one line:
-
 ```bash
-# Start a batch — workflow owns the full lifecycle (scale up, await pollers,
-# fan out, write reports, scale down). Default waits for completion.
+# Upload PDFs + manifest; prints batch_id and the submit command.
+bin/batch/submit.sh <folder>
+
+# Start the workflow (waits for completion; Ctrl-C cancels and tears down).
 python -m prod.batch.cli submit <batch_id>
 
-# Override the derived manifest URI (default:
-# s3://<artifact_bucket>/batches/incoming/<batch_id>/manifest.json — bucket
-# read from prod/batch terraform output).
-python -m prod.batch.cli submit <batch_id> --manifest-uri /path/to/manifest.json
-
-# Submit against a pre-existing fleet (local dev / debug runs).
+# Run against a pre-existing fleet (local dev / debug).
 python -m prod.batch.cli submit <batch_id> --no-manage-fleet
 
-# Inspect
 python -m prod.batch.cli status <batch_id>
 python -m prod.batch.cli cancel <batch_id>
-python -m prod.batch.cli wait-for-workers
+python -m prod.batch.cli wait-for-workers --queues cpu,gpu
 ```
 
-The CLI is the only entry point — there is no S3 -> Lambda auto-trigger.
-Submission is explicit so teardown stays fast (no Lambda VPC ENIs to wait
-on during `down.sh`).
+`submit` defaults `--prod-overlay` to `prod/live/config/prod_config.yaml` —
+the same overlay live uses, so both motifs write trees to
+`s3://chem-lit-artifacts/trees/<document_id>/tree.json` (via
+`pipeline_overrides.output.kb_root`). Pass `--prod-overlay ''` for
+docker-compose dev runs.
+
+Fleet wiring (region, ASG names, scale targets, registration timeout) and
+the artifact bucket are read from `prod/batch/terraform` outputs at submit
+time — terraform is the single source of truth.
+
+There is no S3 -> Lambda auto-trigger. Submission is explicit so teardown
+stays fast (no Lambda VPC ENIs to wait on during `down.sh`).
+
+## Artifacts
+
+- Per-PDF tree: `s3://chem-lit-artifacts/trees/<document_id>/tree.json`
+  (`kb_root` from the shared overlay; same prefix for live and batch).
+- Batch report: `{report.s3_root}/batches/<batch_id>/report/report.{json,md}`
+  per `batch_config.yaml`.
+- `bin/pull-trees.sh [dest]` syncs `s3://<bucket>/trees/` to local disk;
+  works for both motifs.
+
+Reports CLI (cross-motif analytics) lives at `python -m prod.reports`.
 
 ## Testing
 
-**Unit tests** (no infra dependencies):
-
 ```bash
-python -m tests.test_batch_planner       # 10 tests: sharding, ID format, validation
-python -m tests.test_batch_workflows     # pure helpers (merge_config, rows, truncate)
-```
+# Unit (no infra):
+python -m tests.test_batch_planner       # sharding, ID format, validation
+python -m tests.test_batch_workflows     # pure helpers
 
-**Integration smoke test** (requires the local docker-compose Temporal stack
-plus a running worker plus a reachable vLLM endpoint):
-
-```bash
-# In one terminal:
+# Integration smoke (needs docker-compose Temporal + worker + reachable vLLM):
 make infra && make worker
-
-# In another:
 python -m tests.integration.test_batch_e2e
 ```
 
-The integration test submits a 1-PDF manifest pointing at `etl/hybrid.pdf`,
-runs it end-to-end through `BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow`
-with `--no-manage-fleet` semantics (fleet field unset), and asserts the
-summary report files are written. It skips politely if Temporal or vLLM is
-unavailable.
-
-## Phasing
-
-See `AWS_DEPLOYMENT_PLAN.md` at the repo root for the deployment plan.
-Phase C moves the batch lifecycle into `BatchRunWorkflow`. Phase E ships
-the operator-facing `bin/` scripts.
+The integration test submits a 1-PDF manifest pointing at `etl/hybrid.pdf`
+and runs `BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow` with
+fleet management off. Skips politely if Temporal or vLLM is unavailable.

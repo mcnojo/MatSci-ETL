@@ -1,18 +1,22 @@
 # prod/ — AWS deployment
 
-Two operating modes share the same Temporal workflows and activity registry:
+Two motifs, one workflow: both ultimately submit `ProcessPdfWorkflow`
+(`prod/live/workflows/process_pdf.py`) on `cpu-task-queue` + `gpu-task-queue`.
 
-| Subpackage      | Mode                  | Optimizes for                           |
-| --------------- | --------------------- | --------------------------------------- |
-| `prod/live/`    | streaming service     | per-PDF latency (SQS-driven, always-on) |
-| `prod/batch/`   | bounded bulk jobs     | GPU utilization across a full corpus    |
-| `prod/reports/` | batch + live analytics | summary + rich report generation       |
+| Subpackage      | Trigger                | Optimizes for          |
+| --------------- | ---------------------- | ---------------------- |
+| `prod/live/`    | SQS (always-on)        | per-PDF latency        |
+| `prod/batch/`   | `cli submit` (bounded) | GPU utilization        |
+| `prod/reports/` | walker over Temporal   | batch/live/comparison  |
 
-Shared Temporal infrastructure (task queues, retry policies, activity I/O
-models, client helper) lives in `shared/temporal/`.
+Pipeline logic lives in `etl/pipeline/`; `prod/` is deployment orchestration.
+Shared Temporal infra (task queues, retry policies, activity I/O, client) lives
+in `shared/temporal/`.
 
-Pipeline logic itself lives in `etl/pipeline/`. The `prod/` tree wraps it in
-deployment-specific orchestration.
+Both lanes share the pipeline config overlay at `prod/live/config/prod_config.yaml`
+(batch's `cli submit` defaults `--prod-overlay` to it), so finalized
+`tree.json` lands at `s3://chem-lit-artifacts/trees/<document_id>/tree.json`
+for both. Trees sit outside the 3-day `assets/` lifecycle rule; fetch with
+`bin/pull-trees.sh`.
 
-See `prod/live/README.md` and `prod/batch/README.md` for mode-specific
-operator docs.
+See `prod/live/README.md`, `prod/batch/README.md`, `prod/reports/README.md`.
