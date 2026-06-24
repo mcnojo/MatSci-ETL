@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
@@ -10,37 +11,35 @@ from .layout_detector import LayoutDetector, associate_captions
 class AssetExtractor:
     """Renders PDF pages and crops detected visual elements.
 
-    Every PNG is written to local scratch (fast cache for the producing worker)
-    and also published to `assets_uri_prefix` via `shared.s3_io.put_bytes`. The
-    returned URI is the durable cross-worker reference — consumers on other
-    workers (e.g. GPU chandra) reach the bytes through s3_io.get_bytes.
-
-    Local-dev mode: `assets_uri_prefix` is a filesystem path under `kb_root`,
-    so `put_bytes` writes locally and the URI is just that local path. No code
-    branches on prefix scheme.
+    PNGs land in a per-instance tempdir (rendering cache) and are published to
+    `assets_uri_prefix` via `shared.s3_io.put_bytes` — the returned URI is the
+    durable cross-worker reference; consumers fetch through s3_io.get_bytes.
+    The scratch dir is wiped in `close()`; no dependency on `kb_root` (which
+    may be an s3:// URI in prod).
     """
 
     def __init__(self, pdf_path: str, paper_id: str, config: dict):
         self.pdf_path = pdf_path
         self.paper_id = paper_id
         self.config = config
-        self.kb_root = Path(config["output"]["kb_root"])
         self.assets_uri_prefix = config["output"]["assets_uri_prefix"].rstrip("/")
         self.render_dpi = config["rendering"]["dpi"]
         self.ocr_dpi = config["rendering"]["ocr_dpi"]
         self.save_pages = config["output"]["save_page_images"]
 
-        self.paper_dir = self.kb_root / paper_id
-        self.pages_dir = self.paper_dir / "assets" / "pages"
-        self.elements_dir = self.paper_dir / "assets" / "elements"
-        self.pages_dir.mkdir(parents=True, exist_ok=True)
-        self.elements_dir.mkdir(parents=True, exist_ok=True)
+        self._scratch = tempfile.TemporaryDirectory(prefix=f"asset-extractor-{paper_id}-")
+        scratch_root = Path(self._scratch.name)
+        self.pages_dir = scratch_root / "pages"
+        self.elements_dir = scratch_root / "elements"
+        self.pages_dir.mkdir()
+        self.elements_dir.mkdir()
 
         self.doc = fitz.open(pdf_path)
         self.detector = LayoutDetector(config)
 
     def close(self):
         self.doc.close()
+        self._scratch.cleanup()
 
     def render_page(self, page_1based: int, dpi: int | None = None) -> Image.Image:
         dpi = dpi or self.render_dpi
