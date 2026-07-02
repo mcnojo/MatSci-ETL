@@ -1,8 +1,10 @@
 """ProcessPdfWorkflow — PDF pipeline orchestrator.
 
-Stages: load_pages -> tree build (LLM fanout) -> extract_assets -> chandra OCR
-fanout -> attach_ocr -> assign_elements -> figure-aware resummarize -> finalize.
-LLM activities reference pages + config by URI staged in load_pages.
+Stages: load_pages -> (tree build ‖ abstract extraction) -> extract_assets ->
+chandra OCR fanout -> attach_ocr -> assign_elements -> figure-aware resummarize
+-> finalize. LLM activities reference pages + config by URI staged in load_pages.
+Abstract runs as one text-LLM call over pages 1-3 concurrent with the tree
+fanout; result is attached to tree.abstract before enrichment.
 """
 
 import asyncio
@@ -36,10 +38,12 @@ with workflow.unsafe.imports_passed_through():
         LlmResult,
         build_opt_from_config,
         build_tree,
+        extract_json,
     )
     from shared.temporal.activity_models import (
         ChandraCallInput,
         LlmTextCallInput,
+        PageRangeSpec,
         PromptSpec,
     )
     from shared.temporal.task_queues import (
@@ -134,16 +138,24 @@ class ProcessPdfWorkflow:
                 "Tree quality may be poor — consider OCR preprocessing."
             )
 
-        # Stage 1: Build tree — workflow drives orchestration, every LLM call is a Temporal activity
+        # Stage 1: Build tree — workflow drives orchestration, every LLM call is a Temporal activity.
+        # Abstract extraction rides alongside tree build under one TaskGroup: it's one small text-LLM
+        # call against pages 1-3, so overlapping it with the tree fanout is free wall-clock savings.
         opt = build_opt_from_config(config, pages_uri)
         call_llm = self._make_call_llm(config_uri, summary, gpu_q)
-        tree = await build_tree(
-            token_counts, opt,
-            call_llm=call_llm,
-            rng=workflow.random(),
-            paper_id=input.document_id,
-            pdf_path=input.pdf_path,
-        )
+        async with asyncio.TaskGroup() as tg:
+            tree_task = tg.create_task(build_tree(
+                token_counts, opt,
+                call_llm=call_llm,
+                rng=workflow.random(),
+                paper_id=input.document_id,
+                pdf_path=input.pdf_path,
+            ))
+            abstract_task = tg.create_task(self._extract_abstract(
+                pages_uri, config_uri, opt, total_pages, summary, gpu_q,
+            ))
+        tree = tree_task.result()
+        tree.abstract = abstract_task.result()
         node_count = sum(1 for _ in _flatten(tree.root_nodes))
 
         if input.skip_enrichment:
@@ -237,6 +249,51 @@ class ProcessPdfWorkflow:
                 finish_reason=result.finish_reason,
             )
         return call
+
+    async def _extract_abstract(
+        self, pages_uri: str, config_uri: str, opt, total_pages: int,
+        summary: dict, gpu_q: str,
+    ) -> str | None:
+        """One text-LLM call over pages 1-3 -> verbatim abstract, JSON-mode.
+
+        Failure is non-fatal: log, record errored call, return None. The abstract
+        is a convenience field, not on the critical path — MUST NOT raise or the
+        parent TaskGroup will cancel the concurrent tree build.
+        """
+        indices = list(range(min(3, total_pages)))
+        spec = PromptSpec(
+            name="extract_abstract",
+            style=opt.prompt_style,
+            page_kwargs={"content": PageRangeSpec(indices=indices)},
+            pages_uri=pages_uri,
+        )
+        try:
+            result = await workflow.execute_activity(
+                llm_text_call_activity,
+                LlmTextCallInput(
+                    prompt_spec=spec, config_uri=config_uri, model=opt.model_fast,
+                    json_mode=True,
+                ),
+                task_queue=gpu_q,
+                start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+                heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
+                retry_policy=GPU_RETRY_POLICY,
+            )
+        except Exception as exc:
+            workflow.logger.warning("abstract extraction failed: %s", exc)
+            merge_call_record(summary, opt.model_fast, errored=True)
+            return None
+        merge_call_record(
+            summary, result.model,
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+        parsed = extract_json(result.content)
+        val = parsed.get("abstract") if isinstance(parsed, dict) else None
+        text = val.strip() if isinstance(val, str) else ""
+        return text or None
 
     async def _enrich_ocr(
         self, targets: list[OcrTarget], config: dict, summary: dict, gpu_q: str,

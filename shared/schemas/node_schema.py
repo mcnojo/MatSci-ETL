@@ -46,5 +46,8 @@ class DocumentTree(BaseModel):
     paper_id: str
     pdf_path: str
     total_pages: int
+    # Verbatim abstract extracted by the tree_llm over pages 1-3 of the PDF.
+    # None if the paper has no visible abstract or extraction failed.
+    abstract: Optional[str] = None
     doc_description: Optional[str] = None
     root_nodes: list[TreeNode]

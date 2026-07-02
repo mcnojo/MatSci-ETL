@@ -640,6 +640,47 @@ def _generate_doc_description_local(*, structure) -> str:
     Directly return the description, do not include any other text."""
 
 
+# extract_abstract
+# Runs on the concatenated text of the first ~3 pages. JSON-mode output so the
+# parser gets a clean field (avoids preamble drift like "Here is the abstract:").
+
+def _extract_abstract_upstream(*, content: str) -> str:
+    return (
+        """
+    You are given the first pages of a scientific paper. Extract the paper's abstract, verbatim.
+
+    Rules:
+    - Copy the abstract's body text EXACTLY as it appears — do not paraphrase, summarize, condense, or correct.
+    - Do NOT include: the word "Abstract" as a heading, the paper title, author names, affiliations, keywords, funding notes, or any content from the introduction/methods.
+    - If the abstract spans multiple paragraphs, join them with a single newline character.
+    - If no abstract is present in the given text, return an empty string.
+
+    Reply with only this JSON object, nothing else:
+    {"abstract": "<verbatim abstract text, or empty string if none>"}
+    """
+        + "\nText:\n" + content
+    )
+
+
+def _extract_abstract_local(*, content: str) -> str:
+    return f"""You are given the first pages of a scientific paper.
+
+Your task: return the abstract's body text, verbatim, exactly as it appears in the text.
+
+Rules:
+- COPY the wording exactly. Do NOT paraphrase, summarize, condense, or correct.
+- INCLUDE: only the abstract's body prose.
+- EXCLUDE: the word "Abstract" as a heading, the paper title, author names, affiliations, keywords, funding notes, section labels, and any content from the introduction/methods/results.
+- If the abstract spans multiple paragraphs, join them with a single newline character.
+- If no abstract is present in the given text, return an empty string.
+
+Reply with only this JSON object, nothing else:
+{{"abstract": "<verbatim abstract text, or empty string if none>"}}
+
+Text:
+{content}"""
+
+
 # Registry & dispatcher
 
 _PROMPTS: dict[str, dict[str, Callable[..., str]]] = {
@@ -718,6 +759,10 @@ _PROMPTS: dict[str, dict[str, Callable[..., str]]] = {
     "generate_doc_description": {
         "upstream": _generate_doc_description_upstream,
         "local": _generate_doc_description_local,
+    },
+    "extract_abstract": {
+        "upstream": _extract_abstract_upstream,
+        "local": _extract_abstract_local,
     },
 }
 
