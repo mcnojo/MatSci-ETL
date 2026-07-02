@@ -1,8 +1,8 @@
 #!/bin/bash
 # vLLM box bootstrap. Rendered by terraform's templatefile(); runs once at first boot.
-# One systemd unit per box: ocr-vllm-serve :${vllm_port} ${hf_model_id}.
-# Co-hosting is gone — each box owns its GPU end-to-end, so we don't compete
-# with another vllm serve process for KV pool or compile transient.
+# One systemd unit per served role: `services` is a flat list [{key, hf_model_id,
+# port, max_model_len, gpu_memory_utilization, extra_args}, ...]. Chandra's box
+# carries a second bge-m3 embedding process alongside the primary OCR model.
 
 set -euo pipefail
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
@@ -17,11 +17,12 @@ sudo -u "$SERVE_USER" -H bash -lc 'pip install vllm openai'
 echo "[bootstrap] log file"
 install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"
 
-echo "[bootstrap] systemd: ocr-vllm-serve (${hf_model_id} :${vllm_port})"
+%{ for svc in services ~}
+echo "[bootstrap] systemd: ocr-vllm-${svc.key} (${svc.hf_model_id} :${svc.port})"
 # `vllm` lives in the serve user's ~/.local/bin per the DLAMI Python layout.
-cat > /etc/systemd/system/ocr-vllm-serve.service <<UNIT_EOF
+cat > /etc/systemd/system/ocr-vllm-${svc.key}.service <<UNIT_EOF
 [Unit]
-Description=vLLM serve ${hf_model_id}
+Description=vLLM serve ${svc.hf_model_id} (${svc.key})
 After=network-online.target
 Wants=network-online.target
 
@@ -31,13 +32,13 @@ User=$SERVE_USER
 WorkingDirectory=/home/$SERVE_USER
 Environment=HOME=/home/$SERVE_USER
 Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${hf_model_id} \\
-    --port ${vllm_port} \\
+ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${svc.hf_model_id} \\
+    --port ${svc.port} \\
     --tensor-parallel-size 1 \\
-    --gpu-memory-utilization ${gpu_memory_utilization} \\
+    --gpu-memory-utilization ${svc.gpu_memory_utilization} \\
     --trust-remote-code \\
-    --max-model-len ${max_model_len} \\
-    ${vllm_extra_args}
+    --max-model-len ${svc.max_model_len} \\
+    ${svc.extra_args}
 Restart=on-failure
 RestartSec=30
 StandardOutput=append:$VLLM_LOG
@@ -46,9 +47,9 @@ StandardError=append:$VLLM_LOG
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
-
 systemctl daemon-reload
-systemctl enable --now ocr-vllm-serve
+systemctl enable --now ocr-vllm-${svc.key}
+%{ endfor ~}
 
 echo "[bootstrap] nvidia-smi -> CloudWatch sidecar (${gpu_metrics_namespace})"
 # Polls nvidia-smi, publishes one MetricDatum per metric tagged with InstanceId.
@@ -103,4 +104,4 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-gpu-metrics.timer
 
-echo "[bootstrap] complete (model still downloading — tail $VLLM_LOG)"
+echo "[bootstrap] complete (models still downloading — tail $VLLM_LOG)"

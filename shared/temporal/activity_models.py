@@ -67,3 +67,66 @@ class ChandraCallOutput(BaseModel):
     ended_at: float
     input_tokens: int
     output_tokens: int
+
+
+# Indexing route (BM25 + hybrid RAG). URI-not-payload: chunks + embeddings
+# stage through S3; only URIs cross Temporal history.
+
+class LoadTreeInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tree_uri: str
+
+
+class LoadTreeOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    paper_id: str
+    pdf_path: str
+    total_pages: int
+    tree_json_uri: str        # echoes input; downstream reads via s3_io
+
+
+class ChunkDocumentInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    document_id: str
+    run_id: str
+    tree_uri: str
+    pages_uri: str
+    config: dict              # carries retrieval.chunking.max_tokens etc.
+
+
+class ChunkDocumentOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    chunks_uri: str
+    chunk_count: int
+    total_tokens: int
+
+
+class EmbedChunksInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    chunks_uri: str
+    embeddings_uri_out: str    # deterministic destination — activity writes here
+    config: dict
+
+
+class EmbedChunksOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    embeddings_uri: str
+    embedded_count: int
+    dimension: int
+    started_at: float
+    ended_at: float
+
+
+class IndexChunksInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    paper_id: str             # wipe_paper target — pre-write cleanup of prior chunks
+    chunks_uri: str
+    embeddings_uri: str
+    index_name: str
+    config: dict
+
+
+class IndexChunksOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    indexed_count: int
+    index_name: str

@@ -87,10 +87,25 @@ locals {
   batch_report_root              = "s3://${local.artifact_bucket}"
 
   # shared/vllm's models map — one entry per vLLM instance, each carrying its
-  # SG id + port. try() so `terraform destroy` still plans when shared/vllm
-  # was already destroyed (out-of-order down). Empty map -> ingress rules below
-  # for_each over nothing and skip cleanly.
+  # SG id + a `services` list of every role served on that box. try() so
+  # `terraform destroy` still plans when shared/vllm was already destroyed
+  # (out-of-order down). Empty map -> ingress rules below for_each over
+  # nothing and skip cleanly.
   vllm_models = try(data.terraform_remote_state.shared_vllm.outputs.models, {})
+
+  # (box_key, role_key, port, sg_id) per served role. Co-hosted secondaries
+  # (e.g. bge-m3 on the chandra box) get their own ingress rule alongside
+  # the primary port on the same SG.
+  vllm_service_ingress = flatten([
+    for box_key, box in local.vllm_models : [
+      for svc in box.services : {
+        box_key           = box_key
+        role_key          = svc.role_key
+        port              = svc.port
+        security_group_id = box.security_group_id
+      }
+    ]
+  ])
 
   cpu_queue_asg_name = "${var.name_prefix}-cpu-queue"
   gpu_queue_asg_name = "${var.name_prefix}-gpu-queue"
@@ -147,8 +162,10 @@ resource "aws_security_group_rule" "temporal_from_workers" {
 # when shared/vllm has been destroyed (out-of-order down) instead of blowing
 # up the plan.
 resource "aws_security_group_rule" "vllm_from_workers" {
-  for_each                 = local.vllm_models
-  description              = "Batch workers to vLLM ${each.key} port"
+  for_each = {
+    for p in local.vllm_service_ingress : "${p.box_key}-${p.role_key}" => p
+  }
+  description              = "Batch workers to vLLM ${each.value.box_key}:${each.value.role_key} port ${each.value.port}"
   type                     = "ingress"
   from_port                = each.value.port
   to_port                  = each.value.port

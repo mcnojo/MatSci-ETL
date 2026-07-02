@@ -26,8 +26,9 @@ from temporalio.worker.workflow_sandbox import (
     SandboxRestrictions,
 )
 
-from etl.pipeline.cpu_activities import CPU_ACTIVITIES
-from etl.pipeline.gpu_activities import GPU_ACTIVITIES
+from pipeline.cpu_activities import CPU_ACTIVITIES
+from pipeline.gpu_activities import GPU_ACTIVITIES
+from prod.live.workflows.index_document import IndexDocumentWorkflow
 from prod.live.workflows.process_pdf import ProcessPdfWorkflow
 from shared.temporal.task_queues import (
     LIVE_CPU_TQ,
@@ -65,7 +66,7 @@ async def run_worker(
         Worker(
             client,
             task_queue=LIVE_CPU_TQ,
-            workflows=[ProcessPdfWorkflow],
+            workflows=[ProcessPdfWorkflow, IndexDocumentWorkflow],
             activities=CPU_ACTIVITIES,
             workflow_runner=SandboxedWorkflowRunner(
                 restrictions=SandboxRestrictions.default.with_passthrough_modules(*_SANDBOX_PASSTHROUGH),

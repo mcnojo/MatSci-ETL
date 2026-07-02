@@ -36,6 +36,11 @@ dependencies = [
     # ─ AWS
     "boto3>=1.35.0",
 
+    # ─ OpenSearch (BM25 + k-NN chunk index for hybrid RAG)
+    "opensearch-py>=2.6.0",
+    # SigV4 auth for Amazon OpenSearch Service; unused for self-hosted (basic auth).
+    "requests-aws4auth>=1.3.0",
+
     # ─ Workflow orchestration
     "temporalio>=1.27.0",
 
@@ -67,5 +72,5 @@ pipeline-cpu = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shared*", "etl*", "prod*", "vllm*", "preprocessing*"]
+include = ["shared*", "pipeline*", "prod*", "vllm*", "preprocessing*"]
 exclude = ["env*", "frontend*", "docs*", "data*", "test_hard*"]

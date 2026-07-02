@@ -66,11 +66,12 @@ def _build_workers(
         # activities chain (torch). The control lane lives on cpu-pipeline-01,
         # which has pipeline-cpu installed.
         from prod.batch.workflows.activities import activities as batch_activities
+        from prod.batch.workflows.batch_index_run import BatchIndexRunWorkflow
         from prod.batch.workflows.batch_run import BatchRunWorkflow
         workers.append(Worker(
             client,
             task_queue=BATCH_CONTROL_TQ,
-            workflows=[BatchRunWorkflow],
+            workflows=[BatchRunWorkflow, BatchIndexRunWorkflow],
             activities=batch_activities,
             workflow_runner=SandboxedWorkflowRunner(
                 restrictions=SandboxRestrictions.default.with_passthrough_modules(*_SANDBOX_PASSTHROUGH),
@@ -83,13 +84,20 @@ def _build_workers(
     if "cpu" in lanes:
         # CPU lane registers ProcessPdfWorkflow, which pulls the CPU activities
         # chain (torch). Host must have pipeline-cpu installed.
-        from etl.pipeline.cpu_activities import CPU_ACTIVITIES
+        from pipeline.cpu_activities import CPU_ACTIVITIES
         from prod.batch.workflows.shard import ShardWorkflow
+        from prod.batch.workflows.shard_index import ShardIndexWorkflow
+        from prod.live.workflows.index_document import IndexDocumentWorkflow
         from prod.live.workflows.process_pdf import ProcessPdfWorkflow
         workers.append(Worker(
             client,
             task_queue=BATCH_CPU_TQ,
-            workflows=[ShardWorkflow, ProcessPdfWorkflow],
+            workflows=[
+                ShardWorkflow,
+                ShardIndexWorkflow,
+                ProcessPdfWorkflow,
+                IndexDocumentWorkflow,
+            ],
             activities=CPU_ACTIVITIES,
             workflow_runner=SandboxedWorkflowRunner(
                 restrictions=SandboxRestrictions.default.with_passthrough_modules(*_SANDBOX_PASSTHROUGH),
@@ -101,7 +109,7 @@ def _build_workers(
     if "gpu" in lanes:
         # GPU lane registers ONLY HTTP activities — no workflow imports, no
         # torch/cv2. Safe to run on bare `pip install .` (no pipeline-cpu).
-        from etl.pipeline.gpu_activities import GPU_ACTIVITIES
+        from pipeline.gpu_activities import GPU_ACTIVITIES
         workers.append(Worker(
             client,
             task_queue=BATCH_GPU_TQ,

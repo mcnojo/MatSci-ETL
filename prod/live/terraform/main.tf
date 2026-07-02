@@ -58,18 +58,35 @@ locals {
   bucket_arn                     = "arn:${data.aws_partition.current.partition}:s3:::${local.artifact_bucket}"
 
   # shared/vllm's models map — one entry per vLLM instance, each carrying its
-  # SG id + port. try() so `terraform destroy` still plans when shared/vllm
-  # was already destroyed (out-of-order down). Empty map -> for_each below
-  # creates no rules and skips cleanly.
+  # SG id + a `services` list of every role served on that box. try() so
+  # `terraform destroy` still plans when shared/vllm was already destroyed
+  # (out-of-order down). Empty map -> for_each below creates no rules and
+  # skips cleanly.
   vllm_models = try(data.terraform_remote_state.shared_vllm.outputs.models, {})
+
+  # (box_key, role_key, port, sg_id) per served role. Co-hosted secondaries
+  # (e.g. bge-m3 on the chandra box) get their own ingress rule alongside
+  # the primary port on the same SG.
+  vllm_service_ingress = flatten([
+    for box_key, box in local.vllm_models : [
+      for svc in box.services : {
+        box_key           = box_key
+        role_key          = svc.role_key
+        port              = svc.port
+        security_group_id = box.security_group_id
+      }
+    ]
+  ])
 }
 
-# cpu-pipeline-01 -> vLLM ingress, one rule per model. Worker + live consumer
-# both call vLLM via private IP from this box; without these rules connect_tcp
-# times out.
+# cpu-pipeline-01 -> vLLM ingress, one rule per service (primary + secondaries).
+# Worker + live consumer both call vLLM via private IP from this box; without
+# these rules connect_tcp times out.
 resource "aws_security_group_rule" "vllm_from_cpu_pipeline" {
-  for_each                 = local.vllm_models
-  description              = "cpu-pipeline-01 to vLLM ${each.key} port"
+  for_each = {
+    for p in local.vllm_service_ingress : "${p.box_key}-${p.role_key}" => p
+  }
+  description              = "cpu-pipeline-01 to vLLM ${each.value.box_key}:${each.value.role_key} port ${each.value.port}"
   type                     = "ingress"
   from_port                = each.value.port
   to_port                  = each.value.port

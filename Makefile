@@ -10,4 +10,4 @@ worker:
 	python -m prod.live.worker
 
 run:
-	@echo "Usage: python -m etl.cli --pdf <path>"
+	@echo "Usage: python -m pipeline.cli --pdf <path>"

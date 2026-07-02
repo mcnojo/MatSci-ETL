@@ -48,7 +48,7 @@ function sanitizeChandraHtml(html) {
   });
 }
 
-// Pre-parsed chandra envelope from etl/pipeline/chandra_parser.py.
+// Pre-parsed chandra envelope from pipeline/chandra_parser.py.
 function renderParsed(p) {
   if (!p) return "";
   if (p.format === "layout_html") {
@@ -185,7 +185,7 @@ async function init() {
   const sel = $("#paper-select");
   if (!papers.length) {
     sel.innerHTML = `<option>no papers found</option>`;
-    setStatus("etl/kb is empty");
+    setStatus("pipeline/kb is empty");
     return;
   }
   papers.forEach((p) => sel.add(new Option(p, p)));

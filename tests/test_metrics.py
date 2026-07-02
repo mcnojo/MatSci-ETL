@@ -9,7 +9,7 @@ Covers the critical invariants of interval-based timing:
 Run: python -m tests.test_metrics
 """
 
-from etl.pipeline.metrics import (
+from pipeline.metrics import (
     _peak_concurrency,
     _union_duration,
     empty_summary,

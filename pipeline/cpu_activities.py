@@ -25,9 +25,18 @@ from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
 from shared.s3_io import get_bytes, put_bytes
-from shared.schemas import DocumentTree
+from shared.schemas import Chunk, DocumentTree
+from shared.temporal.activity_models import (
+    ChunkDocumentInput,
+    ChunkDocumentOutput,
+    IndexChunksInput,
+    IndexChunksOutput,
+    LoadTreeInput,
+    LoadTreeOutput,
+)
 
 from .asset_extractor import AssetExtractor
+from .chunker import chunk_document
 from .enricher import assign_elements_to_tree
 from .heartbeat import await_with_heartbeats
 from .tree_logic import count_tokens
@@ -371,6 +380,111 @@ async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
     return FinalizeOutput(tree_path=str(tree_path))
 
 
+# Indexing route (BM25 / hybrid RAG)
+
+def _index_artifact_uri(config: dict, document_id: str, leaf: str) -> str:
+    """Deterministic per-paper index artifact URI. run_id is deliberately absent:
+    the user wants one canonical version per paper at rest, so a re-run
+    overwrites in place. Prior versions are wiped from OpenSearch by
+    wipe_paper in index_chunks_activity."""
+    prefix = config["output"]["assets_uri_prefix"].rstrip("/")
+    return f"{prefix}/{document_id}/index/{leaf}"
+
+
+@activity.defn(name="index-document_load-tree")
+async def load_tree_activity(input: LoadTreeInput) -> LoadTreeOutput:
+    """Read + validate the tree.json from URI; hand upstream config back to the
+    workflow so it can call load_pages_activity without a second S3 read.
+    """
+    raw = get_bytes(input.tree_uri).decode("utf-8")
+    tree = DocumentTree.model_validate_json(raw)
+    return LoadTreeOutput(
+        paper_id=tree.paper_id,
+        pdf_path=tree.pdf_path,
+        total_pages=tree.total_pages,
+        tree_json_uri=input.tree_uri,
+    )
+
+
+@activity.defn(name="index-document_chunk")
+async def chunk_document_activity(input: ChunkDocumentInput) -> ChunkDocumentOutput:
+    """Load tree + pages, produce chunks, publish to S3.
+
+    Chunk emission is CPU-bound (tiktoken counts inside the tail-overlap
+    logic) so runs under asyncio.to_thread to keep the event loop responsive
+    for heartbeats.
+    """
+    activity.heartbeat()
+
+    def _run() -> tuple[list[Chunk], int]:
+        tree_raw = get_bytes(input.tree_uri).decode("utf-8")
+        tree = DocumentTree.model_validate_json(tree_raw)
+        pages_raw = json.loads(get_bytes(input.pages_uri).decode("utf-8"))
+        pages: list[tuple[str, int]] = [(t, n) for t, n in pages_raw]
+
+        chunk_cfg = input.config.get("retrieval", {}).get("chunking", {})
+        max_tokens = int(chunk_cfg.get("max_tokens", 512))
+        overlap_tokens = int(chunk_cfg.get("overlap_tokens", 64))
+
+        chunks = chunk_document(
+            tree, pages,
+            max_tokens=max_tokens, overlap_tokens=overlap_tokens,
+            tree_uri=input.tree_uri,
+        )
+        return chunks, sum(c.token_count for c in chunks)
+
+    chunks, total_tokens = await await_with_heartbeats(asyncio.to_thread(_run))
+
+    chunks_uri = _index_artifact_uri(input.config, input.document_id, "chunks.json")
+    body = json.dumps([c.model_dump(exclude_none=True) for c in chunks]).encode("utf-8")
+    put_bytes(chunks_uri, body, "application/json")
+
+    return ChunkDocumentOutput(
+        chunks_uri=chunks_uri,
+        chunk_count=len(chunks),
+        total_tokens=total_tokens,
+    )
+
+
+@activity.defn(name="index-document_index-chunks")
+async def index_chunks_activity(input: IndexChunksInput) -> IndexChunksOutput:
+    """Read chunks + embeddings from S3, wipe the paper's prior slot in
+    OpenSearch, then bulk-index the fresh chunks.
+
+    Aggressive-overwrite semantics: the caller (workflow) owns exactly one
+    version per paper. wipe_paper drops any lingering doc_id under this
+    paper_id BEFORE the fresh write lands, so a re-run with a different
+    chunker output can't leave orphans behind.
+    """
+    activity.heartbeat()
+
+    def _run() -> int:
+        from shared.opensearch import (
+            build_client, bulk_index_chunks, ensure_index, wipe_paper,
+        )
+
+        chunks_raw = json.loads(get_bytes(input.chunks_uri).decode("utf-8"))
+        emb_raw = json.loads(get_bytes(input.embeddings_uri).decode("utf-8"))
+        # embeddings are [[float, ...], ...] positionally aligned with chunks.
+        if len(chunks_raw) != len(emb_raw):
+            raise RuntimeError(
+                f"chunks/embeddings length mismatch: {len(chunks_raw)} vs {len(emb_raw)}"
+            )
+
+        chunks = [
+            Chunk.model_validate({**c, "embedding": e}) for c, e in zip(chunks_raw, emb_raw)
+        ]
+
+        dim = int(input.config["embedding_server"]["dimension"])
+        client = build_client(input.config)
+        ensure_index(client, input.index_name, embedding_dim=dim)
+        wipe_paper(client, input.index_name, input.paper_id)
+        return bulk_index_chunks(client, input.index_name, chunks)
+
+    indexed = await await_with_heartbeats(asyncio.to_thread(_run))
+    return IndexChunksOutput(indexed_count=indexed, index_name=input.index_name)
+
+
 # Registered with workers that poll the CPU lane (BATCH_CPU_TQ / LIVE_CPU_TQ).
 # Mis-routed dispatch fails fast ("no handler") instead of running on the
 # wrong worker class.
@@ -380,4 +494,7 @@ CPU_ACTIVITIES = [
     attach_ocr_activity,
     assign_elements_activity,
     finalize_activity,
+    load_tree_activity,
+    chunk_document_activity,
+    index_chunks_activity,
 ]

@@ -14,7 +14,7 @@ from temporalio import workflow
 from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from etl.pipeline.cpu_activities import (
+    from pipeline.cpu_activities import (
         AssignElementsInput,
         AttachOcrInput,
         ExtractAssetsInput,
@@ -28,13 +28,13 @@ with workflow.unsafe.imports_passed_through():
         finalize_activity,
         load_pages_activity,
     )
-    from etl.pipeline.gpu_activities import (
+    from pipeline.gpu_activities import (
         chandra_vision_call_activity,
         llm_text_call_activity,
     )
-    from etl.pipeline.chandra_parser import parse as parse_chandra
-    from etl.pipeline.metrics import empty_summary, finalize_summary, merge_call_record
-    from etl.pipeline.tree_logic import (
+    from pipeline.chandra_parser import parse as parse_chandra
+    from pipeline.metrics import empty_summary, finalize_summary, merge_call_record
+    from pipeline.tree_logic import (
         LlmResult,
         build_opt_from_config,
         build_tree,

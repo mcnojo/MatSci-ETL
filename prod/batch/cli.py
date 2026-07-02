@@ -30,15 +30,24 @@ from shared.config_loader import apply_prod_overlay, load_pipeline_config
 from shared.temporal.client import connect_temporal
 from shared.temporal.operator_address import resolve_operator_address
 
-from .artifacts import read_manifest
+from .artifacts import read_index_manifest, read_manifest
 from .planner import (
     DEFAULT_SHARD_SIZE,
+    batch_index_workflow_id,
     batch_workflow_id,
+    index_manifest_uri as default_index_manifest_uri,
     manifest_uri as default_manifest_uri,
+    shard_index_manifest,
     shard_manifest,
 )
+from .workflows.batch_index_run import BatchIndexRunWorkflow
 from .workflows.batch_run import BatchRunWorkflow
-from .workflows.models import BatchRunInput, BatchRunOutput
+from .workflows.models import (
+    BatchIndexRunInput,
+    BatchIndexRunOutput,
+    BatchRunInput,
+    BatchRunOutput,
+)
 
 console = Console()
 
@@ -56,7 +65,7 @@ _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
 @click.option("--config", "config_path",
               default="prod/batch/config/batch_config.yaml", show_default=True)
 @click.option("--pipeline-config", "pipeline_config_path",
-              default="etl/config/pipeline_config.yaml", show_default=True)
+              default="pipeline/config/pipeline_config.yaml", show_default=True)
 @click.option("--prod-overlay", "prod_overlay_path",
               default="prod/live/config/prod_config.yaml", show_default=True,
               help="Overlay YAML with pipeline_overrides layered onto the base "
@@ -404,6 +413,161 @@ async def _status(ctx_obj: dict, batch_id: str) -> None:
     if desc.status == WorkflowExecutionStatus.COMPLETED:
         console.print("")
         _print_result(await handle.result())
+
+
+@cli.command("submit-index")
+@click.argument("batch_id")
+@click.option("--manifest-uri", "manifest_uri_override", default=None,
+              help="Override the derived manifest URI. Default: "
+                   "s3://<artifact_bucket>/batches/incoming-index/<batch_id>/manifest.json "
+                   "(bucket read from prod/batch terraform output).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the shard plan without submitting.")
+@click.option("--wait/--no-wait", default=True, show_default=True,
+              help="Block until the workflow completes (default).")
+@click.option("--manage-fleet/--no-manage-fleet", default=True, show_default=True,
+              help="When set, the workflow scales the ASGs up/down. Pass "
+                   "--no-manage-fleet to run against a pre-existing fleet "
+                   "(local dev / debug).")
+@click.pass_context
+def submit_index(
+    ctx: click.Context, batch_id: str, manifest_uri_override: str | None,
+    dry_run: bool, wait: bool, manage_fleet: bool,
+) -> None:
+    """Start a BatchIndexRunWorkflow for an already-uploaded indexing manifest.
+
+    BATCH_ID identifies the indexing job (distinct namespace from PDF batches —
+    workflow id is `idx-batch-<batch_id>`, manifest lives at
+    `batches/incoming-index/<batch_id>/manifest.json`).
+    """
+    asyncio.run(_submit_index(
+        ctx.obj, batch_id, manifest_uri_override,
+        dry_run=dry_run, wait=wait, manage_fleet=manage_fleet,
+    ))
+
+
+def _resolve_index_manifest_uri(
+    batch_id: str, override: str | None, terraform_dir: str,
+) -> str:
+    if override:
+        return override
+    outputs = _terraform_outputs(terraform_dir)
+    bucket = outputs.get(_ARTIFACT_BUCKET_OUTPUT)
+    if not bucket:
+        raise click.ClickException(
+            f"prod/batch terraform output {_ARTIFACT_BUCKET_OUTPUT!r} is "
+            f"missing — cannot derive manifest URI. Pass --manifest-uri "
+            f"s3://… to override, or bring the batch motif up "
+            f"(bin/batch/up.sh)."
+        )
+    return default_index_manifest_uri(bucket, batch_id)
+
+
+def _print_index_plan(manifest, shard_size: int) -> None:
+    shards = shard_index_manifest(manifest, shard_size=shard_size)
+    table = Table(title=f"Index manifest: {manifest.batch_id}", show_header=True)
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Items", str(len(manifest.items)))
+    table.add_row("Shards", str(len(shards)))
+    table.add_row("Shard size", str(shard_size))
+    table.add_row("Has config overrides", "yes" if manifest.config_overrides else "no")
+    console.print(table)
+    console.print("\n[bold]First 5 items:[/bold]")
+    for item in manifest.items[:5]:
+        console.print(f"  {item.document_id}  ->  {item.tree_uri}")
+    if len(manifest.items) > 5:
+        console.print(f"  ... and {len(manifest.items) - 5} more")
+
+
+def _print_index_result(result: BatchIndexRunOutput) -> None:
+    console.print(
+        f"  total={result.total_items}  success={result.success_count}  "
+        f"failure={result.failure_count}"
+    )
+    for label, uri in result.report_uris.items():
+        console.print(f"  {label}: {uri}")
+
+
+async def _submit_index(
+    ctx_obj: dict, batch_id: str, manifest_uri_override: str | None, *,
+    dry_run: bool, wait: bool, manage_fleet: bool,
+) -> None:
+    batch_cfg = ctx_obj["batch_cfg"]
+    manifest_uri = _resolve_index_manifest_uri(
+        batch_id, manifest_uri_override, ctx_obj["terraform_dir"],
+    )
+    console.print(f"Manifest URI: [cyan]{manifest_uri}[/cyan]")
+    manifest = read_index_manifest(manifest_uri)
+    if manifest.batch_id != batch_id:
+        raise click.ClickException(
+            f"batch_id mismatch — argument was {batch_id!r} but manifest "
+            f"body has {manifest.batch_id!r}. Refusing to submit."
+        )
+    shard_size = batch_cfg.get("planner", {}).get("shard_size", DEFAULT_SHARD_SIZE)
+    _print_index_plan(manifest, shard_size)
+    if manage_fleet:
+        console.print(
+            "[bold]Fleet management[/bold]: workflow will scale the ASGs to their "
+            "max_size (read from prod/batch terraform outputs); cancellation "
+            "triggers an ABANDON-detached teardown."
+        )
+    else:
+        console.print("[yellow]--no-manage-fleet[/yellow]: workflow runs against pre-existing pollers; "
+                      "operator owns the fleet.")
+
+    if dry_run:
+        console.print("\n[yellow]dry-run: not submitting[/yellow]")
+        return
+
+    report_root = batch_cfg.get("report", {}).get("s3_root")
+    if not report_root:
+        raise click.BadParameter("batch_config.yaml: report.s3_root must be set")
+    concurrency = batch_cfg.get("concurrency", {})
+    pipeline_config = load_pipeline_config(ctx_obj["pipeline_config_path"])
+    overlay_path = ctx_obj.get("prod_overlay_path")
+    if overlay_path:
+        pipeline_config = apply_prod_overlay(pipeline_config, overlay_path)
+        console.print(f"[dim]Pipeline overlay: {overlay_path}[/dim]")
+
+    client = await connect_temporal(
+        ctx_obj["temporal_address"], namespace=ctx_obj["temporal_namespace"],
+    )
+    workflow_id = batch_index_workflow_id(manifest.batch_id)
+    handle = await client.start_workflow(
+        BatchIndexRunWorkflow.run,
+        BatchIndexRunInput(
+            batch_id=manifest.batch_id,
+            manifest_uri=manifest_uri,
+            pipeline_config=pipeline_config,
+            report_root=report_root,
+            shard_size=shard_size,
+            shards_in_flight=concurrency.get("shards_in_flight", 8),
+            documents_per_shard_in_flight=concurrency.get("pdfs_per_shard_in_flight", 8),
+            **_fleet_kwargs(
+                manage_fleet=manage_fleet,
+                terraform_dir=ctx_obj["terraform_dir"],
+            ),
+        ),
+        id=workflow_id,
+        task_queue=BATCH_CONTROL_TQ,
+        execution_timeout=BATCH_WORKFLOW_EXECUTION_TIMEOUT,
+        id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+    )
+    console.print(f"\n[green]Started[/green] {workflow_id}  ({handle.first_execution_run_id})")
+
+    if not wait:
+        console.print(f"  Track: python -m prod.batch.cli status-index {manifest.batch_id}")
+        return
+
+    console.print("Waiting for completion (Ctrl-C cancels — finally block tears the fleet down)...")
+    try:
+        _print_index_result(await handle.result())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelling workflow...[/yellow]")
+        await handle.cancel()
+        console.print("Cancellation sent. Workflow's finally block will scale the fleet to zero.")
+        sys.exit(130)
 
 
 @cli.command()

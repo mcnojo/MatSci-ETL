@@ -9,7 +9,7 @@ Two motifs, one workflow: both ultimately submit `ProcessPdfWorkflow`
 | `prod/batch/`   | `cli submit` (bounded) | GPU utilization        |
 | `prod/reports/` | walker over Temporal   | batch/live/comparison  |
 
-Pipeline logic lives in `etl/pipeline/`; `prod/` is deployment orchestration.
+Pipeline logic lives in top-level `pipeline/`; `prod/` is deployment orchestration.
 Shared Temporal infra (task queues, retry policies, activity I/O, client) lives
 in `shared/temporal/`.
 

@@ -12,7 +12,7 @@ Preconditions:
         python -m prod.batch.worker --queues control,cpu,gpu
     Single-process multi-lane mode is fine for the e2e — production splits
     lanes across hosts but Temporal queue routing is identical.
-  - vLLM endpoint available per etl/config/pipeline_config.yaml
+  - vLLM endpoint available per pipeline/config/pipeline_config.yaml
 
 If any precondition is unmet, the test SKIPS with a clear message rather
 than failing — this lets it be safe to invoke from any environment.
@@ -34,7 +34,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_PDF = REPO_ROOT / "etl" / "hybrid.pdf"
+TEST_PDF = REPO_ROOT / "pipeline" / "hybrid.pdf"
 TEMPORAL_HOST = os.environ.get("TEMPORAL_HOST", "localhost")
 TEMPORAL_PORT = int(os.environ.get("TEMPORAL_PORT", "7233"))
 WAIT_TIMEOUT_S = int(os.environ.get("BATCH_E2E_TIMEOUT_S", "600"))   # 10 min
@@ -92,7 +92,7 @@ async def _run() -> int:
 
         try:
             pipeline_config = load_pipeline_config(
-                REPO_ROOT / "etl" / "config" / "pipeline_config.yaml"
+                REPO_ROOT / "pipeline" / "config" / "pipeline_config.yaml"
             )
         except FileNotFoundError as exc:
             return _skip(

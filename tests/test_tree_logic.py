@@ -6,8 +6,8 @@ import random
 import tempfile
 from pathlib import Path
 
-from etl.pipeline.page_assembly import assemble_page_text
-from etl.pipeline.tree_logic import BuildOpt, LlmResult, build_tree
+from pipeline.page_assembly import assemble_page_text
+from pipeline.tree_logic import BuildOpt, LlmResult, build_tree
 from shared.prompts.etl import get_prompt
 from shared.schemas import DocumentTree
 from shared.temporal.activity_models import PromptSpec

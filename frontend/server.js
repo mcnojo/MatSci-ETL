@@ -3,7 +3,7 @@ const path = require("path");
 const fs = require("fs");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const KB_DIR = path.join(PROJECT_ROOT, "etl", "kb");
+const KB_DIR = path.join(PROJECT_ROOT, "pipeline", "kb");
 
 const app = express();
 

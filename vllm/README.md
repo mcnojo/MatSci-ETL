@@ -5,7 +5,7 @@ Serve chandra-ocr, DeepSeek-OCR-2, dots.mocr, and olmOCR on EC2 via vLLM.
 ## Operator-side launch
 
 The vLLM box itself is terraform-managed. Workers reach it via EC2 tag
-lookup (`role=vllm-<model>`). Bring it up as part of either motif:
+lookup (`vllm_role_<role_key>=true`). Bring it up as part of either motif:
 
 ```bash
 bin/batch/up.sh           # or bin/live/up.sh — both include shared/vllm

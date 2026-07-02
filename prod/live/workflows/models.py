@@ -23,3 +23,25 @@ class ProcessPdfWorkflowOutput(BaseModel):
     node_count: int
     total_pages: int
     metrics_summary: dict       # aggregated per-call timings and token usage
+
+
+class IndexDocumentWorkflowInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    document_id: str
+    run_id: str
+    tree_uri: str               # local path or s3:// URI to finalized tree.json
+    config: dict                # full pipeline config (must include retrieval.* + embedding_server.*)
+    index_name: str | None = None  # overrides retrieval.opensearch.index_name
+
+
+class IndexDocumentWorkflowOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    document_id: str
+    run_id: str
+    index_name: str
+    chunk_count: int
+    embedded_count: int
+    indexed_count: int
+    total_tokens: int

@@ -10,7 +10,7 @@ locks that contract in so the conflation can't sneak back.
 
 from unittest.mock import patch
 
-from etl.pipeline.asset_extractor import AssetExtractor
+from pipeline.asset_extractor import AssetExtractor
 
 
 def test_instantiates_with_s3_kb_root():
@@ -23,8 +23,8 @@ def test_instantiates_with_s3_kb_root():
         "rendering": {"dpi": 150, "ocr_dpi": 300},
     }
 
-    with patch("etl.pipeline.asset_extractor.fitz.open"), \
-         patch("etl.pipeline.asset_extractor.LayoutDetector"):
+    with patch("pipeline.asset_extractor.fitz.open"), \
+         patch("pipeline.asset_extractor.LayoutDetector"):
         extractor = AssetExtractor(pdf_path="/dev/null", paper_id="doc-1", config=config)
         try:
             # scratch must resolve to a real local dir, not a stringified s3:// URI

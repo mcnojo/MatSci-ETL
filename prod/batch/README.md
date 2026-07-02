@@ -107,6 +107,6 @@ python -m tests.test_batch_workflows     # pure helpers
 python -m tests.integration.test_batch_e2e
 ```
 
-The integration test submits a 1-PDF manifest pointing at `etl/hybrid.pdf`
+The integration test submits a 1-PDF manifest pointing at `pipeline/hybrid.pdf`
 and runs `BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow` with
 fleet management off. Skips politely if Temporal or vLLM is unavailable.

@@ -1,6 +1,6 @@
 """Single entry point for loading the pipeline YAML.
 
-Both the interactive CLI (`etl.cli`) and the SQS-driven ingestion consumer
+Both the interactive CLI (`pipeline.cli`) and the SQS-driven ingestion consumer
 (`prod.live.ingestion.consumer`) submit the same pipeline config to Temporal.
 Relative paths inside that config (e.g. `output.kb_root: "./kb"`) are
 **anchored to the config file's directory** here, before serialization —
@@ -13,7 +13,7 @@ recipe for KB output landing in surprising places.
 
 vLLM URL resolution does NOT happen here — `vllm-instance://` URLs propagate
 through workflow input so the worker resolves at activity boundary using its
-own `OCR_VLLM_PREFER_PRIVATE_IP` setting. In-process callers (`etl/cli.py`)
+own `OCR_VLLM_PREFER_PRIVATE_IP` setting. In-process callers (`pipeline/cli.py`)
 explicitly invoke `resolve_config_urls` before use.
 """
 

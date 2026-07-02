@@ -11,12 +11,17 @@ import json
 
 from shared.s3_io import get_bytes, put_bytes
 
-from .models import BatchManifest
+from .models import BatchManifest, IndexBatchManifest
 
 
 def read_manifest(manifest_uri: str) -> BatchManifest:
-    """Read+validate a manifest from `s3://...` or a local path."""
+    """Read+validate a PDF batch manifest from `s3://...` or a local path."""
     return BatchManifest.model_validate_json(get_bytes(manifest_uri).decode("utf-8"))
+
+
+def read_index_manifest(manifest_uri: str) -> IndexBatchManifest:
+    """Read+validate an indexing batch manifest from `s3://...` or a local path."""
+    return IndexBatchManifest.model_validate_json(get_bytes(manifest_uri).decode("utf-8"))
 
 
 def report_prefix(report_root: str, batch_id: str) -> str:

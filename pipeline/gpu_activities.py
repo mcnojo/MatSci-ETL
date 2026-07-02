@@ -13,10 +13,12 @@ from openai import AsyncOpenAI
 from temporalio import activity
 
 from shared.prompts.etl import get_prompt
-from shared.s3_io import get_bytes
+from shared.s3_io import get_bytes, put_bytes
 from shared.temporal.activity_models import (
     ChandraCallInput,
     ChandraCallOutput,
+    EmbedChunksInput,
+    EmbedChunksOutput,
     LlmTextCallInput,
     LlmTextCallOutput,
     PromptSpec,
@@ -137,7 +139,64 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
     )
 
 
+@activity.defn(name="index-document_embed-chunks")
+async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
+    """Read chunks JSON, batch-embed via the vLLM /embeddings endpoint, write
+    embeddings JSON. One-shot per document — batching happens inside.
+
+    Preserves positional alignment with the input chunks: embeddings[i] belongs
+    to chunks[i]. The index activity assumes this and validates length parity.
+    """
+    activity.heartbeat()
+
+    emb_cfg = input.config["embedding_server"]
+    base_url = resolve_vllm_url(emb_cfg["base_url"])
+    api_key = emb_cfg.get("api_key", "EMPTY")
+    model = emb_cfg["model"]
+    dim = int(emb_cfg["dimension"])
+    batch_size = int(emb_cfg.get("batch_size", 64))
+
+    raw = json.loads(get_bytes(input.chunks_uri).decode("utf-8"))
+    texts = [c["text"] for c in raw]
+
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    started_at = time.time()
+
+    embeddings: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        activity.heartbeat()
+        batch = texts[start:start + batch_size]
+        resp = await await_with_heartbeats(
+            client.embeddings.create(model=model, input=batch),
+        )
+        for row in resp.data:
+            vec = row.embedding
+            if len(vec) != dim:
+                raise RuntimeError(
+                    f"embedding_server.dimension={dim} but model returned "
+                    f"{len(vec)}-dim vectors; rotate index_name and update config"
+                )
+            embeddings.append(list(vec))
+
+    ended_at = time.time()
+
+    put_bytes(
+        input.embeddings_uri_out,
+        json.dumps(embeddings).encode("utf-8"),
+        "application/json",
+    )
+
+    return EmbedChunksOutput(
+        embeddings_uri=input.embeddings_uri_out,
+        embedded_count=len(embeddings),
+        dimension=dim,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+
 GPU_ACTIVITIES = [
     llm_text_call_activity,
     chandra_vision_call_activity,
+    embed_chunks_activity,
 ]

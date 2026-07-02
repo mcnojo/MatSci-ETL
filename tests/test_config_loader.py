@@ -75,7 +75,7 @@ def test_config_dir_is_absolute_and_resolved():
 
 
 def test_dotdot_paths_resolve_correctly():
-    """`../kb` from etl/config/ should resolve to etl/kb (one level up)."""
+    """`../kb` from pipeline/config/ should resolve to pipeline/kb (one level up)."""
     with tempfile.TemporaryDirectory() as d:
         d = Path(d).resolve()
         config_dir = d / "config"

@@ -17,14 +17,14 @@ tree_llm:
   provider: openai
   model: "google/gemma-4-E4B-it"                # instruction-tuned; ships a chat template. Must match shared/vllm var.models["gemma"].hf_model_id.
   model_fast: "google/gemma-4-E4B-it"           # same box for both — no separate fast/strong split under this model.
-  base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-gemma)
+  base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_gemma=true)
   api_key_env: null                             # no key needed for in-VPC vLLM
   prompt_style: local
   max_response_tokens: 16384                    # response cap per chat call. Fits inside gemma's 128K window alongside tree.max_tokens_per_node.
 
 # Vision server (OCR model, any OpenAI-compatible endpoint)
 vision_server:
-  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-chandra)
+  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_chandra=true)
   api_key: "EMPTY"                              # vLLM default
   ocr_model: "datalab-to/chandra-ocr-2"
 
@@ -74,3 +74,34 @@ output:
   save_page_images: true
   pretty_print_json: true
   assets_uri_prefix: "s3://chem-lit-artifacts/assets"
+
+# Embedding server (OpenAI-compatible /embeddings endpoint). Consumed by
+# IndexDocumentWorkflow's embed_chunks activity. dimension is validated
+# against the model's actual output; a mismatch fails fast so a mis-set
+# index mapping never silently corrupts vectors.
+# The `embed` role is co-hosted on the chandra vLLM box (shared/vllm terraform's
+# var.models.chandra.secondary_services). vllm-instance://embed:8006/v1
+# resolves to the chandra box IP via the `vllm_role_embed=true` EC2 tag.
+embedding_server:
+  base_url: "vllm-instance://embed:8006/v1"    # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_embed=true)
+  api_key: "EMPTY"
+  model: "BAAI/bge-m3"
+  dimension: 1024
+  batch_size: 64
+
+# Retrieval — BM25 + dense hybrid index (OpenSearch).
+# `auth: basic` reads user/password from the env vars named below. Switch to
+# `auth: aws_sigv4` (and add `region`) for Amazon OpenSearch Service.
+# Rotate index_name when swapping embedding_server.model — dimension is baked
+# into the mapping and can't be mutated in place.
+retrieval:
+  opensearch:
+    endpoint: "https://opensearch.internal:9200"
+    auth: "basic"
+    user_env: "OPENSEARCH_USER"
+    password_env: "OPENSEARCH_PASSWORD"
+    verify_certs: false
+    index_name: "chem-lit-chunks-v1"
+  chunking:
+    max_tokens: 512
+    overlap_tokens: 64

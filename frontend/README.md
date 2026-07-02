@@ -1,6 +1,6 @@
 # KB viewer
 
-Side-by-side PDF / doc-tree viewer for `etl/kb/<paper>/`.
+Side-by-side PDF / doc-tree viewer for `pipeline/kb/<paper>/`.
 
 ```
 cd frontend
@@ -9,7 +9,7 @@ npm start             # http://localhost:5173
 PORT=3000 npm start   # custom port
 ```
 
-Reads from `../etl/kb/<paper>/{tree.json,assets/...}` and streams the PDF
+Reads from `../pipeline/kb/<paper>/{tree.json,assets/...}` and streams the PDF
 referenced in `tree.json:pdf_path` (sandboxed to project root).
 
 URL `?paper=<id>` jumps to a specific paper.

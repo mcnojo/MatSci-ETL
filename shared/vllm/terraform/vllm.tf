@@ -77,19 +77,47 @@ locals {
     var.availability_zone != null ? data.aws_subnets.in_az[0].ids[0] :
     sort(data.aws_subnets.selected.ids)[0]
   )
-  role_tags = {
-    for k, _ in var.models : k => "vllm-${k}"
+
+  # Flatten primary + secondaries into a single per-instance service list.
+  # Consumed by user_data (one systemd unit per service) and by the tag block
+  # (one `vllm_role_<key>` tag per served role). Primary always first so the
+  # template's ordering matches operator intuition.
+  services_per_instance = {
+    for k, m in var.models : k => concat(
+      [{
+        key                    = k
+        hf_model_id            = m.hf_model_id
+        port                   = m.port
+        max_model_len          = m.max_model_len
+        gpu_memory_utilization = m.gpu_memory_utilization
+        extra_args             = m.extra_args
+      }],
+      m.secondary_services,
+    )
   }
+
+  # (instance_key, service_key, port) triples — used for security-group
+  # ingress fan-out so every port a box serves is reachable from the operator
+  # CIDRs, not just the primary.
+  service_ingress_pairs = flatten([
+    for k, services in local.services_per_instance : [
+      for svc in services : {
+        instance_key = k
+        service_key  = svc.key
+        port         = svc.port
+      }
+    ]
+  ])
 }
 
-# One SG per model. Strict least-privilege: each SG only opens that model's
-# port to operator_cidrs, so an inbound rule for chandra can't accidentally
-# reach gemma. Consumer modules (prod/batch, prod/live) attach worker-SG
-# ingress via the per-model security_group_ids output.
+# One SG per box (keyed by primary role). Every service on that box shares
+# the SG; per-service port rules fan out via local.service_ingress_pairs
+# below. Strict least-privilege: each SG only opens ports served by ITS box,
+# so an inbound rule for chandra can't accidentally reach gemma.
 resource "aws_security_group" "vllm" {
   for_each    = var.models
   name        = "${var.name_prefix}-vllm-${each.key}-sg"
-  description = "vLLM serving SG for ${local.role_tags[each.key]}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_ids output."
+  description = "vLLM serving SG for box ${each.key}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_ids output."
   vpc_id      = data.aws_vpc.selected.id
 
   egress {
@@ -107,14 +135,16 @@ resource "aws_security_group" "vllm" {
 }
 
 resource "aws_security_group_rule" "vllm_from_operator" {
-  for_each          = length(var.operator_cidrs) > 0 ? var.models : {}
-  description       = "vLLM port for ${each.key} from operator CIDR(s)"
+  for_each = length(var.operator_cidrs) > 0 ? {
+    for p in local.service_ingress_pairs : "${p.instance_key}-${p.service_key}" => p
+  } : {}
+  description       = "vLLM port ${each.value.port} for ${each.value.service_key} from operator CIDR(s)"
   type              = "ingress"
   from_port         = each.value.port
   to_port           = each.value.port
   protocol          = "tcp"
   cidr_blocks       = var.operator_cidrs
-  security_group_id = aws_security_group.vllm[each.key].id
+  security_group_id = aws_security_group.vllm[each.value.instance_key].id
 }
 
 resource "aws_security_group_rule" "ssh_from_operator" {
@@ -138,9 +168,9 @@ data "aws_iam_policy_document" "ec2_assume" {
   }
 }
 
-# One IAM role per model. Could be shared (the policy is identical), but a
+# One IAM role per box. Could be shared (the policy is identical), but a
 # per-instance role keeps the principal-of-least-name straight in CloudTrail
-# and lets a per-model policy fork in later without restructuring.
+# and lets a per-box policy fork in later without restructuring.
 resource "aws_iam_role" "vllm" {
   for_each           = var.models
   name               = "${var.name_prefix}-vllm-${each.key}"
@@ -205,23 +235,24 @@ resource "aws_instance" "vllm" {
   }
 
   user_data = templatefile("${path.module}/user_data.sh.tpl", {
-    hf_model_id            = each.value.hf_model_id
-    vllm_port              = each.value.port
-    vllm_extra_args        = each.value.extra_args
-    max_model_len          = each.value.max_model_len
-    gpu_memory_utilization = each.value.gpu_memory_utilization
-    aws_region             = var.region
-    gpu_metrics_interval   = var.gpu_metrics_interval_s
-    gpu_metrics_namespace  = var.gpu_metrics_namespace
+    services              = local.services_per_instance[each.key]
+    aws_region            = var.region
+    gpu_metrics_interval  = var.gpu_metrics_interval_s
+    gpu_metrics_namespace = var.gpu_metrics_namespace
   })
 
-  # Single role tag — shared/vllm/resolve.py filters on `role=vllm-<key>`
-  # and finds exactly one match per model.
-  tags = {
-    Name  = "${var.name_prefix}-vllm-${each.key}"
-    role  = local.role_tags[each.key]
-    Model = each.key
-  }
+  # One `vllm_role_<key>=true` tag per served role. shared/vllm/resolve.py
+  # filters on these tags — so a box hosting chandra + embed is discoverable
+  # under either role_key. `Model` echoes the primary key for human triage.
+  tags = merge(
+    {
+      Name  = "${var.name_prefix}-vllm-${each.key}"
+      Model = each.key
+    },
+    {
+      for svc in local.services_per_instance[each.key] : "vllm_role_${svc.key}" => "true"
+    },
+  )
 
   # Cap the silent RunInstances retry loop. Default is 10m; capacity errors
   # surface in ≤3m here. Bounds only the EC2 state->running wait — user_data

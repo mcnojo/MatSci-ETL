@@ -232,8 +232,8 @@ vllm/results/*
 # vLLM tracked instance state
 vllm/aws/instances/
 
-etl/kb/*
-etl/logs/*
+pipeline/kb/*
+pipeline/logs/*
 docs/
 .DS_Store
 test_hard/

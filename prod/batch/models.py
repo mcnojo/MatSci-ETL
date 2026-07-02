@@ -68,3 +68,59 @@ class BatchManifest(BaseModel):
                 raise ValueError(f"duplicate document_id in manifest: {item.document_id}")
             seen.add(item.document_id)
         return v
+
+
+class IndexManifestItem(BaseModel):
+    """One tree.json in an indexing manifest — the input contract for the
+    BatchIndexRunWorkflow. Distinct from BatchItem: there's no PDF, just a
+    pointer to a previously-finalized DocumentTree."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    document_id: str
+    tree_uri: str
+
+    @field_validator("document_id")
+    @classmethod
+    def _document_id_format(cls, v: str) -> str:
+        if not v or not v.replace("-", "").replace("_", "").isalnum():
+            raise ValueError(
+                "document_id must be non-empty and contain only alphanumerics, "
+                "hyphens, or underscores"
+            )
+        return v
+
+
+class IndexBatchManifest(BaseModel):
+    """A batch of tree.json documents to chunk/embed/index as a single job.
+
+    `batch_id` is the workflow ID for BatchIndexRunWorkflow and the S3 prefix
+    for all index-batch-scoped artifacts. Distinct namespace from process-PDF
+    batch_ids so an `idx-<x>` and a `batch-<x>` never collide.
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_id: str
+    items: list[IndexManifestItem]
+    config_overrides: Optional[dict] = None
+
+    @field_validator("batch_id")
+    @classmethod
+    def _batch_id_format(cls, v: str) -> str:
+        if not v or not v.replace("-", "").replace("_", "").isalnum():
+            raise ValueError(
+                "batch_id must be non-empty and contain only alphanumerics, "
+                "hyphens, or underscores"
+            )
+        return v
+
+    @field_validator("items")
+    @classmethod
+    def _items_nonempty_and_unique(cls, v: list[IndexManifestItem]) -> list[IndexManifestItem]:
+        if not v:
+            raise ValueError("manifest must contain at least one item")
+        seen = set()
+        for item in v:
+            if item.document_id in seen:
+                raise ValueError(f"duplicate document_id in manifest: {item.document_id}")
+            seen.add(item.document_id)
+        return v

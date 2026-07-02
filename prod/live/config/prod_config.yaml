@@ -15,7 +15,7 @@ ingestion:
   poll_interval_s: 5
   visibility_timeout_s: 300
 
-# Pipeline overlay applied on top of etl/config/pipeline_config.yaml.
+# Pipeline overlay applied on top of pipeline/config/pipeline_config.yaml.
 # Only carries scale-run deltas from the base — vision + tree_llm URLs, s3
 # paths, and model ids all live in the base config. Workers resolve
 # `vllm-instance://` URLs at activity boundary via EC2 tag lookup

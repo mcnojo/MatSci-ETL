@@ -10,7 +10,7 @@ S3 live/incoming/ -> SQS -> ingestion/consumer.py -> ProcessPdfWorkflow
 ```
 
 Workflow defined in `workflows/process_pdf.py` (shared with batch — task queue is
-the motif signal). Activities live in `etl/pipeline/{cpu,gpu}_activities.py`.
+the motif signal). Activities live in `pipeline/{cpu,gpu}_activities.py`.
 
 Hosts (terraform: `shared/temporal`, `shared/vllm`, `prod/live/terraform`):
 
@@ -34,7 +34,7 @@ bin/pull-trees.sh [dest]   # syncs s3://<bucket>/trees/*/tree.json (live + batch
 For one-off runs from the operator's Mac against the running AWS Temporal:
 
 ```bash
-python -m etl.cli --pdf paper.pdf
+python -m pipeline.cli --pdf paper.pdf
 ```
 
 ## Wiring notes

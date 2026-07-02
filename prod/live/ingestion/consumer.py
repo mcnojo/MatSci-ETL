@@ -115,7 +115,7 @@ def _load_pipeline_config(prod_cfg_path: str | Path) -> dict:
     Goes through the shared loader+overlay so live and batch use identical
     merge semantics (see shared/config_loader.py::apply_prod_overlay).
     """
-    base_path = Path(__file__).resolve().parents[3] / "etl" / "config" / "pipeline_config.yaml"
+    base_path = Path(__file__).resolve().parents[3] / "pipeline" / "config" / "pipeline_config.yaml"
     config = load_pipeline_config(base_path)
     return apply_prod_overlay(config, prod_cfg_path)
 

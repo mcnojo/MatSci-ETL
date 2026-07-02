@@ -44,8 +44,10 @@ check_vllm() {
 }
 
 # vLLM endpoints come from `terraform output -json models` — one row per
-# entry in var.models. Empty output (no apply yet, or empty map) is treated
-# as a misconfiguration the operator must resolve before retrying.
+# entry in var.models. Each entry surfaces a `services` list (primary + any
+# co-hosted secondaries), so we emit one health-check row per service. Empty
+# output (no apply yet, or empty map) is treated as a misconfiguration the
+# operator must resolve before retrying.
 if $want_vllm; then
   vllm_models_json=$(terraform -chdir="$REPO_ROOT/shared/vllm/terraform" output -json models 2>/dev/null || echo "")
   if [[ -z "$vllm_models_json" || "$vllm_models_json" == "null" || "$vllm_models_json" == "{}" ]]; then
@@ -54,13 +56,18 @@ if $want_vllm; then
   fi
   # Parallel arrays: vllm_keys / vllm_hosts / vllm_ports / vllm_ok. Built with
   # a plain `while read` loop so this runs under macOS's bash 3.2 (no mapfile).
+  # Key = "<box>:<role>" so co-hosted secondaries are visible in status output.
   vllm_keys=(); vllm_hosts=(); vllm_ports=(); vllm_ok=()
   while IFS=$'\t' read -r _key _host _port; do
     vllm_keys+=("$_key")
     vllm_hosts+=("$_host")
     vllm_ports+=("$_port")
     vllm_ok+=(false)
-  done < <(echo "$vllm_models_json" | jq -r 'to_entries[] | "\(.key)\t\(.value.public_ip)\t\(.value.port)"')
+  done < <(echo "$vllm_models_json" | jq -r '
+    to_entries[] as $box |
+    $box.value.services[] as $svc |
+    "\($box.key):\($svc.role_key)\t\($box.value.public_ip)\t\($svc.port)"
+  ')
 fi
 
 if $want_temporal; then

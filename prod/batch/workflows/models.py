@@ -98,3 +98,103 @@ class BatchRunOutput(BaseModel):
     success_count: int
     failure_count: int
     report_uris: dict[str, str]      # summary_uri, per_item_uri, failures_uri
+
+
+# Indexing route (parallel motif). Distinct workflows so per-item child typing
+# stays clean — Temporal doesn't polymorphize child workflow signatures.
+
+class IndexBatchItem(BaseModel):
+    """One document in an indexing manifest. Distinct from BatchItem: no PDF
+    URI, just the tree pointer produced by a prior ProcessPdfWorkflow run."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    document_id: str
+    tree_uri: str
+
+
+class IndexItemResult(BaseModel):
+    """One document's outcome inside an index shard."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    document_id: str
+    tree_uri: str
+    status: Literal["success", "failure"]
+    workflow_id: str
+    index_name: Optional[str] = None
+    chunk_count: Optional[int] = None
+    embedded_count: Optional[int] = None
+    indexed_count: Optional[int] = None
+    total_tokens: Optional[int] = None
+    error: Optional[str] = None
+
+
+class ShardIndexInput(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_id: str
+    shard_index: int
+    items: list[IndexBatchItem]
+    pipeline_config: dict            # must contain retrieval.* + embedding_server.*
+    max_in_flight: int = 8
+
+
+class ShardIndexOutput(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    shard_index: int
+    items: list[IndexItemResult]
+
+
+class BatchIndexRunInput(BaseModel):
+    """Top-level parent input for an indexing batch. Peer of BatchRunInput —
+    owns fleet lifecycle (scale up + await pollers + scale down) around the
+    ShardIndexWorkflow fan-out. When the fleet fields are all None (local
+    dev, or `--no-manage-fleet`), the workflow assumes an out-of-band fleet
+    and skips those stages.
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_id: str
+    manifest_uri: str
+    pipeline_config: dict
+    report_root: str
+    shard_size: int = 50
+    shards_in_flight: int = 8
+    documents_per_shard_in_flight: int = 8
+
+    # Fleet lifecycle — same all-or-none contract as BatchRunInput.
+    region: Optional[str] = None
+    cpu_queue_asg_name: Optional[str] = None
+    gpu_queue_asg_name: Optional[str] = None
+    cpu_queue_desired: Optional[int] = None
+    gpu_queue_desired: Optional[int] = None
+    worker_registration_timeout_s: int = 600
+
+    @model_validator(mode="after")
+    def _fleet_all_or_none(self) -> "BatchIndexRunInput":
+        fleet_fields = (
+            self.region, self.cpu_queue_asg_name, self.gpu_queue_asg_name,
+            self.cpu_queue_desired, self.gpu_queue_desired,
+        )
+        n_set = sum(1 for f in fleet_fields if f is not None)
+        if 0 < n_set < len(fleet_fields):
+            raise ValueError(
+                "Fleet fields are all-or-none. Set every one of {region, "
+                "cpu_queue_asg_name, gpu_queue_asg_name, cpu_queue_desired, "
+                "gpu_queue_desired} to manage the fleet, or leave all None."
+            )
+        return self
+
+    @property
+    def manages_fleet(self) -> bool:
+        return self.region is not None
+
+
+class BatchIndexRunOutput(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_id: str
+    total_items: int
+    success_count: int
+    failure_count: int
+    report_uris: dict[str, str]      # summary_uri, per_item_uri, failures_uri

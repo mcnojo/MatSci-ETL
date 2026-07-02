@@ -9,7 +9,7 @@ import asyncio
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
-from etl.pipeline.heartbeat import await_with_heartbeats
+from pipeline.heartbeat import await_with_heartbeats
 
 
 # Module-level flags the test inspects after the activity is cancelled

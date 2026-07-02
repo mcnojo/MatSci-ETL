@@ -16,15 +16,20 @@ variable "tags" {
   default     = {}
 }
 
-# Each entry provisions one dedicated GPU instance running exactly one
-# `vllm serve` unit. Key becomes the role tag (role=vllm-<key>) and
-# the host portion of vllm-instance:// URLs the resolver consumes.
+# Each entry provisions one dedicated GPU instance. The primary vLLM service
+# uses the entry-level fields; optional `secondary_services` add extra vLLM
+# processes co-hosted on the same box (each its own systemd unit, port, GPU
+# budget). Every role served — primary + secondaries — surfaces as a
+# `vllm_role_<key> = true` EC2 tag, so the resolver can point
+# `vllm-instance://<role>:<port>/...` at the box regardless of whether that
+# role is the primary or a co-host.
 #
-# Defaults split chandra (L4, modest context) and gemma (L40S, 128K context)
-# onto their own hardware. Co-hosting on a single L40S was the previous shape;
-# it crowded gemma's KV pool below what `generate_toc_continue` needs.
+# The chandra box carries an embedding secondary (bge-m3) because chandra
+# peaks at ~17 GB / L4-24 GB and has real headroom; the workflow's embed
+# activity resolves `vllm-instance://embed:...` to the same instance IP,
+# hitting a distinct port.
 variable "models" {
-  description = "Per-model GPU instances. Map keyed by model_key; each value pins the instance type, vLLM port, model id, and per-process GPU/context sizing."
+  description = "Per-instance vLLM deployment. Map keyed by primary role_key; each value pins the instance type + primary vLLM config, plus optional co-hosted secondaries."
   type = map(object({
     instance_type          = string
     hf_model_id            = string
@@ -32,15 +37,33 @@ variable "models" {
     max_model_len          = number
     gpu_memory_utilization = number
     extra_args             = string
+    secondary_services = optional(list(object({
+      key                    = string
+      hf_model_id            = string
+      port                   = number
+      max_model_len          = number
+      gpu_memory_utilization = number
+      extra_args             = string
+    })), [])
   }))
   default = {
     chandra = {
-      instance_type          = "g6.xlarge" # 1× L4 24 GB. chandra peak ~17 GB at 8K — fits with room.
+      instance_type          = "g6.xlarge" # 1× L4 24 GB. chandra ~17 GB peak at 8K; embed secondary fits alongside.
       hf_model_id            = "datalab-to/chandra-ocr-2"
       port                   = 8004
-      max_model_len          = 8192 # OCR prompts are short; 8K is plenty.
-      gpu_memory_utilization = 0.85 # dedicated box: take the GPU.
+      max_model_len          = 8192
+      gpu_memory_utilization = 0.75 # room for bge-m3 co-host below.
       extra_args             = ""
+      secondary_services = [
+        {
+          key                    = "embed"       # resolves `vllm-instance://embed:8006/*` to this box.
+          hf_model_id            = "BAAI/bge-m3" # 568M params, 1024-dim, strong on scientific text.
+          port                   = 8006
+          max_model_len          = 8192 # bge-m3 stops attending past 8K; larger wastes KV.
+          gpu_memory_utilization = 0.15 # ~3.6 GB on L4 24 — bge-m3 fp16 ~2.2 GB + margin.
+          extra_args             = "--task embed --served-model-name BAAI/bge-m3 --dtype auto"
+        },
+      ]
     }
     gemma = {
       instance_type          = "g6e.xlarge" # 1× L40S 48 GB. gemma BF16 ~16 GB + 128K KV fits at 0.85.
@@ -52,16 +75,63 @@ variable "models" {
     }
   }
 
-  # Ports must be globally unique so wait_health, resolver-derived URLs, and
-  # human debugging never collide. Cheap plan-time guard.
+  # Every port across every service (primary + secondary) must be globally
+  # unique so wait_health, resolver-derived URLs, and human debugging never
+  # collide. Cheap plan-time guard.
   validation {
-    condition     = length(var.models) == length(distinct([for m in values(var.models) : m.port]))
-    error_message = "models.*.port values must all be distinct."
+    condition = length(distinct(flatten([
+      for k, m in var.models : concat(
+        [m.port],
+        [for svc in m.secondary_services : svc.port],
+      )
+      ]))) == length(flatten([
+      for k, m in var.models : concat(
+        [m.port],
+        [for svc in m.secondary_services : svc.port],
+      )
+    ]))
+    error_message = "All vLLM ports (primary + secondary) must be distinct across every box."
+  }
+
+  # Every role_key across every service must be globally unique. Duplicates
+  # would produce colliding EC2 tags (`vllm_role_<key>=true` on two boxes)
+  # and the resolver would raise `multiple running instances tagged ...`.
+  validation {
+    condition = length(distinct(flatten([
+      for k, m in var.models : concat(
+        [k],
+        [for svc in m.secondary_services : svc.key],
+      )
+      ]))) == length(flatten([
+      for k, m in var.models : concat(
+        [k],
+        [for svc in m.secondary_services : svc.key],
+      )
+    ]))
+    error_message = "All role keys (primary + secondary) must be distinct."
+  }
+
+  # Per-service utilization is in (0, 0.95]. Sum-per-box is also in (0, 0.95]
+  # — leaves ≥5% for CUDA contexts and vLLM's compile transient outside its
+  # own budget.
+  validation {
+    condition = alltrue([
+      for k, m in var.models : (
+        m.gpu_memory_utilization > 0 && m.gpu_memory_utilization <= 0.95 &&
+        alltrue([for svc in m.secondary_services : svc.gpu_memory_utilization > 0 && svc.gpu_memory_utilization <= 0.95])
+      )
+    ])
+    error_message = "Each service's gpu_memory_utilization must be in (0, 0.95]."
   }
 
   validation {
-    condition     = alltrue([for m in values(var.models) : m.gpu_memory_utilization > 0 && m.gpu_memory_utilization <= 0.95])
-    error_message = "gpu_memory_utilization must be in (0, 0.95]; >0.95 leaves no headroom for vLLM's compile-time transient."
+    condition = alltrue([
+      for k, m in var.models : (
+        m.gpu_memory_utilization
+        + sum(concat([0], [for svc in m.secondary_services : svc.gpu_memory_utilization]))
+      ) <= 0.95
+    ])
+    error_message = "Sum of gpu_memory_utilization per box (primary + secondaries) must be ≤ 0.95."
   }
 }
 

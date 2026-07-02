@@ -11,6 +11,7 @@ from pathlib import Path
 from shared.schemas import TreeNode, DocumentTree, VisualElement, NodeSource
 
 from .chem_extractor import extract_chem_entities, load_seed_entities
+from .table_markdown import html_table_to_markdown
 
 
 def flatten_tree(nodes: list[TreeNode]) -> list[TreeNode]:
@@ -73,12 +74,16 @@ def assign_elements_to_tree(
                 ]))
                 elem_dict["chem_entities"] = extract_chem_entities(combined_text, seed_entities)
 
-            # For tables: pull the first <table>…</table> out of chandra's layout_html OCR.
+            # Tables: extract the first <table>…</table> from chandra's layout_html
+            # and normalize to markdown. structured_data is retrieval-facing text,
+            # so raw HTML would poison BM25 + embeddings — hence the conversion here.
             if elem_dict["element_type"] == "table":
                 ocr = elem_dict.get("ocr_text") or ""
                 m = re.search(r"<table[\s\S]*?</table>", ocr, re.IGNORECASE)
                 if m:
-                    elem_dict["structured_data"] = m.group(0)
+                    md = html_table_to_markdown(m.group(0))
+                    if md:
+                        elem_dict["structured_data"] = md
 
             target_node.visual_elements.append(VisualElement(**elem_dict))
 
