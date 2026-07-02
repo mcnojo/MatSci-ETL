@@ -1,6 +1,8 @@
-# vLLM OCR Serving
+# vLLM OCR benchmark utility
 
-Serve chandra-ocr, DeepSeek-OCR-2, dots.mocr, and olmOCR on EC2 via vLLM.
+Standalone probes for the terraform-managed chandra vLLM endpoint. This
+folder is separate from the pipeline path (`shared/vllm/*`, `pipeline/*`)
+and only exists for hand-benchmarking a running box.
 
 ## Operator-side launch
 
@@ -15,41 +17,30 @@ See `bin/README.md` for the operator manual.
 
 ## Client (benchmark utility)
 
-`vllm/client.py` is a standalone benchmark probe — useful for sanity-checking
-a running vLLM endpoint without going through the pipeline. Pass `--host` as
-the public IP of the vLLM box (look it up via terraform output or EC2 tags;
-the pipeline itself resolves via `shared/vllm/resolve.py`).
+`vllm/client.py` sends a single image to the chandra endpoint. Useful for
+sanity-checking a running box without going through the pipeline. Pass
+`--host` as the public IP of the vLLM box (look it up via terraform output
+or EC2 tags; the pipeline itself resolves via `shared/vllm/resolve.py`).
 
 ```bash
-# all models for an image
-python vllm/client.py image.png --all --host <vllm-public-ip>
-
-# single model
-python vllm/client.py image.png --model chandra --host <vllm-public-ip>
-
-# custom prompt
-python vllm/client.py image.png --model dots --host <vllm-public-ip> \
+python vllm/client.py image.png --host <vllm-public-ip>
+python vllm/client.py image.png --task ocr --host <vllm-public-ip>
+python vllm/client.py image.png --host <vllm-public-ip> \
     --prompt "Extract tables as markdown"
 ```
 
 Results save to `vllm/results/`.
 
-## Box-side serve scripts
+`vllm/batch.py` runs `client.ocr_image()` over a hand-listed batch of
+image paths under `../data/pages/`. Update `IMAGES` in the file to point at
+whatever set you're benchmarking.
 
-`vllm/serve_*.sh` are standalone wrappers around `vllm serve` for manually
-benchmarking a single model on a vLLM box (e.g. via SSM `start-session`).
-They are not invoked by terraform — `shared/vllm`'s user-data wires two
-systemd units (vision + tree_llm) pinned to their respective `hf_model_id`s.
-
-| Script                | Model                  | Port |
-| --------------------- | ---------------------- | ---- |
-| `serve_deepseek_ocr.sh` | DeepSeek-OCR-2 (3B)   | 8001 |
-| `serve_dots_mocr.sh`    | dots.mocr (3B)        | 8002 |
-| `serve_olmocr.sh`       | olmOCR-2-7B (FP8)     | 8003 |
+`vllm/compare.py` renders a side-by-side HTML page from anything in
+`vllm/results/` — original figure vs OCR output, keyed by filename.
 
 ## Logs (terraform-managed box)
 
 ```bash
 aws ssm start-session --target <vllm-instance-id>
-tail -f /var/log/vllm_serve.log
+tail -f /var/log/vllm.log
 ```

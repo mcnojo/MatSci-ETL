@@ -9,7 +9,7 @@ IMAGES = [
 ]
 
 
-def run(model="deepseek", task="chart"):
+def run(model="chandra", task="chart"):
     host = _resolve_host(model, None)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -27,7 +27,7 @@ def run(model="deepseek", task="chart"):
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="deepseek")
+    p.add_argument("--model", default="chandra")
     p.add_argument("--task", default="chart")
     args = p.parse_args()
     run(model=args.model, task=args.task)

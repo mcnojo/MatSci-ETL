@@ -1,4 +1,3 @@
-
 import argparse
 import base64
 import sys
@@ -17,16 +16,6 @@ from shared.prompts.chandra import (
 
 
 PROMPTS = {
-    "deepseek": {
-        "general": "Convert this contents of this image into text logically, including a complete parse of any charts, tables, or figures, along with their data.",
-        "chart": (
-            "Parse this chart or plot. Extract all axis labels, units, scales, "
-            "legend entries, and data series. Output the data as a markdown table "
-            "with columns for each variable. Preserve all numerical values and units."
-        ),
-        "table": "Parse all tables. Extract data as markdown tables preserving headers, units, and all cell values.",
-        "chemical": "Extract all chemical formulas, compound names, and SMILES notations.",
-    },
     "chandra": {
         "general": CHANDRA_OCR_LAYOUT_PROMPT,
         "chart": CHANDRA_OCR_LAYOUT_PROMPT,
@@ -34,42 +23,12 @@ PROMPTS = {
         "chemical": CHANDRA_OCR_LAYOUT_PROMPT,
         "ocr": CHANDRA_OCR_PROMPT,
     },
-    "dots": {
-        "general": "Convert this image to markdown, including all representations of charts, tables, etc along with their data.",
-        "chart": (
-            "Extract all data from this chart. Include axis labels, units, legend "
-            "entries, and tabulate the data series as a markdown table."
-        ),
-        "table": "Extract all tables as markdown tables preserving structure, headers, and units.",
-        "chemical": "Extract all chemical formulas and compound names.",
-    },
-    "olmocr": {
-        "general": "Convert this image to markdown, including all representations of charts, tables, etc along with their data.",
-        "chart": (
-            "Extract all data from this chart. Include axis labels, units, legend "
-            "entries, and tabulate the data series as a markdown table."
-        ),
-        "table": "Extract all tables as markdown tables preserving structure, headers, and units.",
-        "chemical": "Extract all chemical formulas and compound names.",
-    },
 }
 
 MODELS = {
-    "deepseek": {
-        "port": 8001,
-        "name": "deepseek-ai/DeepSeek-OCR-2",
-    },
     "chandra": {
         "port": 8004,
         "name": "datalab-to/chandra-ocr-2",
-    },
-    "dots": {
-        "port": 8002,
-        "name": "rednote-hilab/dots.mocr",
-    },
-    "olmocr": {
-        "port": 8003,
-        "name": "allenai/olmOCR-2-7B-1025-FP8",
     },
 }
 
@@ -135,7 +94,7 @@ def ocr_image(image_path: str, model_key: str, host: str = "localhost",
 def main():
     p = argparse.ArgumentParser(description="Send an image to a vLLM OCR model")
     p.add_argument("image")
-    p.add_argument("--model", choices=list(MODELS), default="deepseek")
+    p.add_argument("--model", choices=list(MODELS), default="chandra")
     p.add_argument("--task", choices=["general", "chart", "table", "chemical", "ocr"], default="general")
     p.add_argument("--host", default=None)
     p.add_argument("--prompt", default=None, help="Override the task prompt entirely")
