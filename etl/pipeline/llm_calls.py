@@ -4,18 +4,17 @@
 Temporal's `RetryPolicy` retries the whole activity on failure.
 
 Provider selection:
-- ollama: OpenAI-compatible endpoint + native JSON mode (`format: "json"`) + num_ctx
-- openai: OpenAI-compatible endpoint (vLLM, MLX, Together, OpenRouter, OpenAI proper)
+- openai: OpenAI-compatible endpoint (vLLM, Together, OpenRouter, OpenAI proper)
 - anthropic: native Anthropic SDK
 
 Module globals persist across activity invocations within a worker process.
-`_init_clients` is idempotent over identical config; `_active_model` is intentionally
-preserved so the Ollama VRAM-unload hint can take effect across calls.
+`_init_clients` is idempotent over identical config.
 """
 
 import logging
-import os
 import time
+
+import os
 
 from openai import AsyncOpenAI
 
@@ -23,53 +22,39 @@ from shared.vllm.resolve import resolve_vllm_url
 
 log = logging.getLogger("llm_calls")
 
-_provider: str = "ollama"
+_provider: str = "openai"
 _async_client: AsyncOpenAI | None = None
 _anthropic_async_client = None
 _model_name: str = ""
-_num_ctx: int = 32768
 _max_response_tokens: int = 8192
-_ollama_base: str = ""
-_active_model: str | None = None
 
 
 def _init_clients(config: dict) -> None:
     """Initialize provider clients from `config['tree_llm']`. Mutates module globals.
 
-    Safe to call repeatedly with the same config. Does not reset `_active_model`
-    so the cross-call VRAM-unload hint remains effective.
+    Safe to call repeatedly with the same config.
     """
     global _provider, _async_client, _anthropic_async_client
-    global _model_name, _num_ctx, _max_response_tokens, _ollama_base
+    global _model_name, _max_response_tokens
 
     cfg = config["tree_llm"]
     _model_name = cfg["model"]
 
-    explicit_provider = (cfg.get("provider") or "").lower() or None
-    # Resolve here (idempotent for non-vllm-instance URLs) so workers route to
-    # the co-hosted tree_llm vLLM unit via the EC2 tag lookup, mirroring the
-    # vision activity's resolve at activity boundary.
-    base_url = resolve_vllm_url(cfg.get("base_url") or "http://localhost:11434/v1")
-
-    if explicit_provider:
-        _provider = explicit_provider
-    elif ":11434" in base_url and "/v1" in base_url:
-        _provider = "ollama"
-    else:
-        _provider = "openai"
-
-    if _provider not in ("ollama", "openai", "anthropic"):
+    _provider = (cfg.get("provider") or "openai").lower()
+    if _provider not in ("openai", "anthropic"):
         raise ValueError(
-            f"tree_llm.provider must be 'ollama' | 'openai' | 'anthropic', got {_provider!r}"
+            f"tree_llm.provider must be 'openai' | 'anthropic', got {_provider!r}"
         )
 
-    _num_ctx = cfg.get("num_ctx") or cfg.get("max_tokens") or 32768
+    # Resolve here (idempotent for non-vllm-instance URLs) so workers route to
+    # the tree_llm vLLM box via the EC2 tag lookup, mirroring the vision
+    # activity's resolve at activity boundary.
+    base_url = resolve_vllm_url(cfg["base_url"])
+
     _max_response_tokens = cfg.get("max_response_tokens", 8192)
 
     api_key_env = cfg.get("api_key_env")
     api_key = os.environ.get(api_key_env) if api_key_env else None
-
-    _ollama_base = ""
 
     if _provider == "anthropic":
         try:
@@ -85,32 +70,6 @@ def _init_clients(config: dict) -> None:
         _anthropic_async_client = AsyncAnthropic(api_key=api_key)
     else:
         _async_client = AsyncOpenAI(base_url=base_url, api_key=api_key or "local")
-        if _provider == "ollama":
-            _ollama_base = (
-                base_url.rsplit("/v1", 1)[0] if "/v1" in base_url else base_url.rstrip("/")
-            )
-
-
-def _ensure_model_exclusive(model_name: str) -> None:
-    """Unload the previously active Ollama model before switching. No-op for non-Ollama."""
-    global _active_model
-
-    if not _ollama_base or model_name == _active_model:
-        return
-
-    if _active_model is not None:
-        try:
-            import httpx
-            httpx.post(
-                f"{_ollama_base}/api/generate",
-                json={"model": _active_model, "keep_alive": 0},
-                timeout=10,
-            )
-            log.info("Unloaded model %s from VRAM", _active_model)
-        except Exception as e:
-            log.debug("Failed to unload model %s: %s", _active_model, e)
-
-    _active_model = model_name
 
 
 def _openai_messages_to_anthropic(messages: list) -> tuple[str | None, list]:
@@ -151,16 +110,14 @@ def _usage_anthropic(response) -> tuple[int, int]:
 
 
 def _openai_chat_kwargs(model: str, messages: list, temperature: float, json_mode: bool) -> dict:
-    kwargs: dict = {"model": model, "messages": messages, "temperature": temperature}
-    if _provider == "ollama":
-        extra_body: dict = {"num_ctx": _num_ctx}
-        if json_mode:
-            extra_body["format"] = "json"
-        kwargs["extra_body"] = extra_body
-    else:
-        kwargs["max_tokens"] = _max_response_tokens
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": _max_response_tokens,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
     return kwargs
 
 
@@ -176,7 +133,6 @@ async def execute_text_call(
     """
     _init_clients(config)
     use_model = model or _model_name
-    _ensure_model_exclusive(use_model)
 
     messages = [{"role": "user", "content": prompt}]
     started_at = time.time()

@@ -219,7 +219,7 @@ Figure has some text which is cut off - detected by 'ink' at the edge of the ima
 ### Pre Pipeline composition...
 host on aws olmo + rednote + deepseek OCR behand an api gate so that we can test directly the data we get out of each respectively.
 
-> bin/dev/up_vllm.sh
+> bin/live/up.sh                                     # or bin/batch/up.sh — includes shared/vllm
 > aws ssm start-session --target <vllm-instance-id>  # then: tail -f /var/log/vllm_serve.log
 > cd ..
 > python batch.py

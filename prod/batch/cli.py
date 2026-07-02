@@ -59,13 +59,13 @@ _DEFAULT_BATCH_TF_DIR = str(Path(__file__).resolve().parent / "terraform")
               default="etl/config/pipeline_config.yaml", show_default=True)
 @click.option("--prod-overlay", "prod_overlay_path",
               default="prod/live/config/prod_config.yaml", show_default=True,
-              help="Overlay YAML with pipeline_overrides + storage replacing dev "
-                   "defaults (vllm endpoints, prod paths). Pass '' to skip the "
-                   "overlay for docker-compose dev runs.")
+              help="Overlay YAML with pipeline_overrides layered onto the base "
+                   "pipeline config (prod-only paths, disable full-page renders, etc). "
+                   "Pass '' to skip the overlay.")
 @click.option("--temporal-address", default=None,
               help="Temporal gRPC endpoint. Resolution order: flag -> "
                    "TEMPORAL_ADDRESS env -> shared/temporal terraform output "
-                   "cpu_pipeline_public_ip:7233 -> localhost:7233.")
+                   "cpu_pipeline_public_ip:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--terraform-dir", "terraform_dir",
               default=_DEFAULT_BATCH_TF_DIR, show_default=True,
@@ -243,9 +243,8 @@ async def _start_workflow(
     pipeline_config = load_pipeline_config(ctx_obj["pipeline_config_path"])
     overlay_path = ctx_obj.get("prod_overlay_path")
     if overlay_path:
-        # Without the overlay, batch ships dev config (laptop Ollama, laptop
-        # paths) to prod workers. Live's SQS consumer already does the same
-        # merge — both motifs now share apply_prod_overlay.
+        # Layer prod-only overrides (paths, save_page_images=false, etc) on
+        # the base config. Live's SQS consumer runs the same merge.
         pipeline_config = apply_prod_overlay(pipeline_config, overlay_path)
         console.print(f"[dim]Pipeline overlay: {overlay_path}[/dim]")
     workflow_id = batch_workflow_id(manifest.batch_id)

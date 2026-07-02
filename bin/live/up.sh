@@ -2,7 +2,7 @@
 # Bring the live motif online.
 #
 #   shared/temporal apply  ->  cpu-pipeline-01 (Temporal, worker, ocr-ingestion unit)
-#   shared/vllm     apply  ->  vLLM box (env_tag=prod)
+#   shared/vllm     apply  ->  vLLM box
 #   live            apply  ->  SQS queue + S3 notification + SSM queue-URL handoff
 #   wait_health            ->  poll Temporal :7233 + vLLM /health
 #
@@ -87,9 +87,9 @@ step "shared/temporal init + apply"
     ${temporal_args[@]+"${temporal_args[@]}"} \
     ${extra_args[@]+"${extra_args[@]}"}
 
-step "shared/vllm init + apply (env_tag=prod)"
+step "shared/vllm init + apply"
 "$TF" shared/vllm init -input=false -upgrade
-"$TF" shared/vllm apply -auto-approve -input=false -var "env_tag=prod" \
+"$TF" shared/vllm apply -auto-approve -input=false \
     ${vllm_args[@]+"${vllm_args[@]}"} \
     ${extra_args[@]+"${extra_args[@]}"}
 

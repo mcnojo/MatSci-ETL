@@ -78,8 +78,8 @@ def _resolve_host(model_key: str, explicit: str | None) -> str:
     if explicit:
         return explicit
     print(f"--host required for '{model_key}'.", file=sys.stderr)
-    print("  Bring up a dev vLLM box: bin/dev/up_vllm.sh", file=sys.stderr)
-    print("  Then pass its public IP via --host.", file=sys.stderr)
+    print("  Find the public IP via `bin/tf.sh shared/vllm output -json models`", file=sys.stderr)
+    print("  and pass it via --host.", file=sys.stderr)
     sys.exit(1)
 
 

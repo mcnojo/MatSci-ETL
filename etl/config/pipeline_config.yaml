@@ -1,21 +1,10 @@
-# LLM for tree building (text-based, not vision)
-# Provider: auto-detected from base_url (:11434 -> ollama, else -> openai),
-# or set explicitly. prompt_style: "local" for small open models, "upstream"
-# for strong cloud models (verbatim VectifyAI/PageIndex prompts).
+# LLM for tree building (text-based, not vision).
+# Provider: openai (default; targets any OpenAI-compatible endpoint, including
+# vLLM's chat-completions API) or anthropic (uses the native SDK).
+# prompt_style: "local" (elaborated for small open models) | "upstream" (verbatim
+# VectifyAI/PageIndex prompts, tuned for stronger cloud models).
 
-
-## OpenAI ──
-# tree_llm:
-#   provider: openai
-#   model: "gpt-4o"
-#   model_fast: "gpt-4o-mini"
-#   base_url: "https://api.openai.com/v1"
-#   api_key_env: "OPENAI_API_KEY"
-#   prompt_style: upstream
-#   max_response_tokens: 8192
-#
-
-## Anthropic
+## Anthropic swap (uncomment to use)
 # tree_llm:
 #   provider: anthropic
 #   model: "claude-sonnet-4-5"
@@ -25,19 +14,17 @@
 #   max_response_tokens: 8192
 
 tree_llm:
-  provider: ollama                            # ollama | openai | anthropic (optional; auto-detected from base_url)
-  model: "gemma4:e4b-mlx"                     # strong model: structure generation, TOC transformation
-  model_fast: "gemma4:e4b-mlx"                # fast model: TOC detection, verification, summaries
-  base_url: "http://localhost:11434/v1"       # Ollama's OpenAI-compatible endpoint
-  api_key_env: null                           # no key needed for local
-  prompt_style: local                         # local (elaborated) | upstream (verbatim PageIndex)
-  num_ctx: 32768                              # Ollama context window (input + output tokens). e4b supports 128K.
-  max_response_tokens: 8192                   # cloud response cap (OpenAI/Anthropic max_tokens); ignored by Ollama
+  provider: openai
+  model: "google/gemma-4-E4B-it"                # instruction-tuned; ships a chat template. Must match shared/vllm var.models["gemma"].hf_model_id.
+  model_fast: "google/gemma-4-E4B-it"           # same box for both — no separate fast/strong split under this model.
+  base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-gemma)
+  api_key_env: null                             # no key needed for in-VPC vLLM
+  prompt_style: local
+  max_response_tokens: 16384                    # response cap per chat call. Fits inside gemma's 128K window alongside tree.max_tokens_per_node.
 
 # Vision server (OCR model, any OpenAI-compatible endpoint)
-# Works with vLLM, Ollama, MLX, or any server exposing /v1/chat/completions
 vision_server:
-  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-chandra-<env>)
+  base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag role=vllm-chandra)
   api_key: "EMPTY"                              # vLLM default
   ocr_model: "datalab-to/chandra-ocr-2"
 
@@ -77,30 +64,13 @@ enrichment:
   max_concurrent_enrichments: 4
   figure_aware_resummarize: true      # post-enrichment Stage E: re-summarize nodes with figure data (no new OCR calls)
 
-# Storage backend (scaffolding for the future S3 cutover — see shared/storage/)
-# NOTE: the active code path still reads output.kb_root below. The S3Store /
-# LocalStore abstraction in shared/storage exists but no caller uses it yet;
-# once activities are updated to take URIs, create_store() will read this block.
-storage:
-  backend: "local"
-  local:
-    root: "../kb"                      # relative paths anchored to this config file's dir -> etl/kb
-  s3:
-    bucket: "chem-lit-artifacts"
-    prefix: ""
-    region: null                       # null = use AWS_DEFAULT_REGION / instance profile
-
-# Output — active artifact root (read by activities + asset_extractor)
-# Relative paths are anchored to this config file's directory at load time
-# (see shared/config_loader.py), so `../kb` here resolves to `etl/kb/`
-# regardless of the worker's CWD.
+# Output — active artifact root.
+# `kb_root` is the tree.json destination; `assets_uri_prefix` is where
+# AssetExtractor publishes element PNGs (and page PNGs when save_page_images=true).
+# Cross-worker reads go through shared.s3_io.get_bytes, which routes s3:// natively.
+# The prod overlay flips save_page_images to false for scale runs.
 output:
-  kb_root: "../kb"
+  kb_root: "s3://chem-lit-artifacts/trees"
   save_page_images: true
   pretty_print_json: true
-  # Where AssetExtractor publishes element + page PNGs so cross-worker consumers
-  # (e.g. GPU chandra activity) can read them via shared.s3_io. In local dev this
-  # is a path on disk — get_bytes/put_bytes route to the filesystem. Prod overlay
-  # replaces this with an s3:// URI so files survive the CPU->GPU machine boundary.
-  # Relative paths are anchored at load time (shared/config_loader.py).
-  assets_uri_prefix: "../kb"
+  assets_uri_prefix: "s3://chem-lit-artifacts/assets"

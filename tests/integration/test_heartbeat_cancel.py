@@ -8,11 +8,10 @@ activity coroutine raises CancelledError, AND (b) actually cancel the
 underlying inner task so its resources are released and its finally-blocks
 run.
 
-This test exercises that path against a real Temporal server (the local
-docker-compose stack). It registers a self-contained worker + workflow +
-activity in this process under a unique task queue (so it can't collide
-with the user's regular worker) and verifies cancellation propagation
-end-to-end.
+This test exercises that path against a reachable Temporal server. It
+registers a self-contained worker + workflow + activity in this process
+under a unique task queue (so it can't collide with the user's regular
+worker) and verifies cancellation propagation end-to-end.
 
 The workflow module here ONLY uses the activity by string name, not by
 Python reference, so the sandbox does not need to import the activity's

@@ -4,10 +4,12 @@ Usage:
     python -m etl.cli --pdf paper.pdf
     python -m etl.cli --pdf-dir papers/ --skip-enrichment
     python -m etl.cli --pdf paper.pdf --temporal-address 10.0.1.5:7233
+
+Temporal address resolution: --temporal-address wins; else TEMPORAL_ADDRESS
+env var; else shared/temporal terraform output cpu_pipeline_public_ip:7233.
 """
 
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -21,6 +23,7 @@ from prod.live.workflows.models import ProcessPdfWorkflowInput, ProcessPdfWorkfl
 from shared.temporal.task_queues import LIVE_CPU_TQ, WORKFLOW_EXECUTION_TIMEOUT
 from shared.config_loader import load_pipeline_config
 from shared.temporal.client import connect_temporal
+from shared.temporal.operator_address import resolve_operator_address
 
 console = Console()
 
@@ -85,7 +88,10 @@ async def _run(
     show_default=True,
 )
 @click.option("--skip-enrichment", is_flag=True, default=False)
-@click.option("--temporal-address", default="localhost:7233", show_default=True)
+@click.option("--temporal-address", default=None,
+              help="Temporal gRPC endpoint. Resolution order: flag -> "
+                   "TEMPORAL_ADDRESS env -> shared/temporal terraform output "
+                   "cpu_pipeline_public_ip:7233.")
 @click.option("-v", "--verbose", is_flag=True, default=False)
 def main(pdf, pdf_dir, config_path, skip_enrichment, temporal_address, verbose):
     level = logging.DEBUG if verbose else logging.WARNING
@@ -116,7 +122,11 @@ def main(pdf, pdf_dir, config_path, skip_enrichment, temporal_address, verbose):
         console.print("[red]No PDFs found.[/red]")
         sys.exit(1)
 
-    asyncio.run(_run(pdfs, config, skip_enrichment, temporal_address))
+    resolved_address, source = resolve_operator_address(temporal_address)
+    if source != "flag":
+        console.print(f"[dim]Temporal address: {resolved_address} (from {source})[/dim]")
+
+    asyncio.run(_run(pdfs, config, skip_enrichment, resolved_address))
 
 
 if __name__ == "__main__":

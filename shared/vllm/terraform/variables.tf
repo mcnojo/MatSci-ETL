@@ -16,19 +16,9 @@ variable "tags" {
   default     = {}
 }
 
-variable "env_tag" {
-  description = "dev | prod. Tagged on every instance as role=vllm-<model_key>-<env_tag> so dev and prod boxes coexist unambiguously in the resolver."
-  type        = string
-  default     = "prod"
-  validation {
-    condition     = contains(["dev", "prod"], var.env_tag)
-    error_message = "env_tag must be dev or prod."
-  }
-}
-
 # Each entry provisions one dedicated GPU instance running exactly one
-# `vllm serve` unit. Key becomes the role tag (role=vllm-<key>-<env_tag>)
-# and the host portion of vllm-instance:// URLs the resolver consumes.
+# `vllm serve` unit. Key becomes the role tag (role=vllm-<key>) and
+# the host portion of vllm-instance:// URLs the resolver consumes.
 #
 # Defaults split chandra (L4, modest context) and gemma (L40S, 128K context)
 # onto their own hardware. Co-hosting on a single L40S was the previous shape;
@@ -100,7 +90,7 @@ variable "availability_zone" {
 }
 
 variable "operator_cidrs" {
-  description = "CIDRs allowed to reach each vLLM port. Empty = no operator ingress (fail-closed); in-VPC workers reach vLLM via SG-to-SG ingress rules owned by the consumer modules (prod/batch, prod/live). bin/<motif>/up.sh and bin/dev/up_vllm.sh auto-detect the operator's public IP via checkip.amazonaws.com when this is not supplied — direct `terraform apply` callers must pass it explicitly."
+  description = "CIDRs allowed to reach each vLLM port. Empty = no operator ingress (fail-closed); in-VPC workers reach vLLM via SG-to-SG ingress rules owned by the consumer modules (prod/batch, prod/live). bin/<motif>/up.sh auto-detects the operator's public IP via checkip.amazonaws.com when this is not supplied — direct `terraform apply` callers must pass it explicitly."
   type        = list(string)
   default     = []
 }

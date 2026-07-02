@@ -22,22 +22,19 @@ Hosts (terraform: `shared/temporal`, `shared/vllm`, `prod/live/terraform`):
 
 Worker concurrency: 8 CPU / 4 GPU activities (`config/prod_config.yaml`).
 
-## Local dev
-
-```bash
-make infra          # Temporal + Postgres via docker compose
-make worker         # python -m prod.live.worker
-python -m etl.cli --pdf etl/hybrid.pdf
-# Temporal UI: http://localhost:8233
-```
-
-## Prod
+## Usage
 
 ```bash
 bin/live/up.sh             # applies shared/platform, shared/temporal, shared/vllm, live
 bin/live/submit.sh <pdf>…  # S3 upload -> SQS -> consumer auto-starts workflow
 bin/live/down.sh
 bin/pull-trees.sh [dest]   # syncs s3://<bucket>/trees/*/tree.json (live + batch share kb_root)
+```
+
+For one-off runs from the operator's Mac against the running AWS Temporal:
+
+```bash
+python -m etl.cli --pdf paper.pdf
 ```
 
 ## Wiring notes
@@ -48,7 +45,7 @@ bin/pull-trees.sh [dest]   # syncs s3://<bucket>/trees/*/tree.json (live + batch
   over `ingestion.queue_url` in the config.
 - **vLLM resolution.** `tree_llm.base_url` and `vision_server.base_url` use
   `vllm-instance://<role>:<port>/v1` and resolve at activity boundary via
-  EC2 tag lookup (`shared/vllm/resolve.py`, driven by `OCR_VLLM_ENV_TAG` +
+  EC2 tag lookup (`shared/vllm/resolve.py`, driven by
   `OCR_VLLM_PREFER_PRIVATE_IP` in the worker systemd unit).
 - **Artifact layout.** `s3://chem-lit-artifacts/assets/` for element/page PNGs
   (3-day lifecycle); `s3://chem-lit-artifacts/trees/` for final tree.json (no

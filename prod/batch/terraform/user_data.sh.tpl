@@ -163,7 +163,6 @@ Environment=AWS_REGION=${aws_region}
 Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
 Environment=BATCH_LIFECYCLE_QUEUE=${lifecycle_queue}
-Environment=OCR_VLLM_ENV_TAG=prod
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
 # Cap torch/OMP/MKL threads — prevent N×vCPU oversubscription under max_concurrent.
 Environment=OMP_NUM_THREADS=${torch_num_threads}

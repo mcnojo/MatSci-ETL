@@ -78,7 +78,7 @@ locals {
     sort(data.aws_subnets.selected.ids)[0]
   )
   role_tags = {
-    for k, _ in var.models : k => "vllm-${k}-${var.env_tag}"
+    for k, _ in var.models : k => "vllm-${k}"
   }
 }
 
@@ -88,7 +88,7 @@ locals {
 # ingress via the per-model security_group_ids output.
 resource "aws_security_group" "vllm" {
   for_each    = var.models
-  name        = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}-sg"
+  name        = "${var.name_prefix}-vllm-${each.key}-sg"
   description = "vLLM serving SG for ${local.role_tags[each.key]}. Egress all; operator ingress as standalone rules; consumer modules attach their own worker-SG ingress via the security_group_ids output."
   vpc_id      = data.aws_vpc.selected.id
 
@@ -143,13 +143,13 @@ data "aws_iam_policy_document" "ec2_assume" {
 # and lets a per-model policy fork in later without restructuring.
 resource "aws_iam_role" "vllm" {
   for_each           = var.models
-  name               = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+  name               = "${var.name_prefix}-vllm-${each.key}"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
 resource "aws_iam_instance_profile" "vllm" {
   for_each = var.models
-  name     = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+  name     = "${var.name_prefix}-vllm-${each.key}"
   role     = aws_iam_role.vllm[each.key].name
 }
 
@@ -169,7 +169,7 @@ data "aws_iam_policy_document" "vllm" {
 
 resource "aws_iam_policy" "vllm" {
   for_each = var.models
-  name     = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+  name     = "${var.name_prefix}-vllm-${each.key}"
   policy   = data.aws_iam_policy_document.vllm.json
 }
 
@@ -215,13 +215,12 @@ resource "aws_instance" "vllm" {
     gpu_metrics_namespace  = var.gpu_metrics_namespace
   })
 
-  # Single role tag — shared/vllm/resolve.py filters on `role=vllm-<key>-<env>`
+  # Single role tag — shared/vllm/resolve.py filters on `role=vllm-<key>`
   # and finds exactly one match per model.
   tags = {
-    Name  = "${var.name_prefix}-vllm-${each.key}-${var.env_tag}"
+    Name  = "${var.name_prefix}-vllm-${each.key}"
     role  = local.role_tags[each.key]
     Model = each.key
-    Env   = var.env_tag
   }
 
   # Cap the silent RunInstances retry loop. Default is 10m; capacity errors

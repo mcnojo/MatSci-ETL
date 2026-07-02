@@ -1,12 +1,13 @@
-"""End-to-end smoke test for the batch path against a local Temporal stack.
+"""End-to-end smoke test for the batch path against a reachable Temporal stack.
 
 This is an INTEGRATION test, not a unit test. It exercises the full path:
   CLI submit -> BatchRunWorkflow -> ShardWorkflow -> ProcessPdfWorkflow
-on a 1-PDF manifest, running against your existing local Temporal
-(docker-compose) with the live worker (`make worker`) handling tasks.
+on a 1-PDF manifest. Point TEMPORAL_HOST/TEMPORAL_PORT at whichever Temporal
+you want to hit (e.g. the AWS box via `bin/live/up.sh` + a local port-forward,
+or a self-hosted instance).
 
-Preconditions (all on localhost):
-  - Temporal server reachable at localhost:7233
+Preconditions:
+  - Temporal server reachable at $TEMPORAL_HOST:$TEMPORAL_PORT (default localhost:7233)
   - A batch worker running all three lanes:
         python -m prod.batch.worker --queues control,cpu,gpu
     Single-process multi-lane mode is fine for the e2e — production splits
@@ -56,7 +57,7 @@ async def _run() -> int:
     if not _port_open(TEMPORAL_HOST, TEMPORAL_PORT):
         return _skip(
             f"Temporal not reachable at {TEMPORAL_HOST}:{TEMPORAL_PORT}. "
-            f"Start it with `make infra`."
+            f"Set TEMPORAL_HOST/TEMPORAL_PORT to a reachable Temporal server."
         )
     if not TEST_PDF.exists():
         return _skip(f"Test PDF missing: {TEST_PDF}")
@@ -95,10 +96,9 @@ async def _run() -> int:
             )
         except FileNotFoundError as exc:
             return _skip(
-                f"pipeline config resolution failed ({exc}). The vLLM endpoint "
-                f"isn't available; bring up a dev box with `bin/dev/up_vllm.sh` "
-                f"or run the live path (`make worker` + `python -m etl.cli`) "
-                f"once first to verify your local setup."
+                f"pipeline config resolution failed ({exc}). Make sure the vLLM "
+                f"boxes are up (`bin/live/up.sh` or `bin/batch/up.sh`) so the "
+                f"`vllm-instance://` URLs can resolve at activity boundary."
             )
 
         print(f"manifest:    {manifest_path}")

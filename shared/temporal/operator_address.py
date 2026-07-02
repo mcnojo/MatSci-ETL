@@ -10,11 +10,9 @@ in priority order:
   2. TEMPORAL_ADDRESS env var
   3. `terraform output -raw cpu_pipeline_public_ip` from
      shared/temporal/terraform (port 7233 appended)
-  4. "localhost:7233" (local docker-compose dev fallback)
 
-Step 3 is silent on any failure (terraform missing, module not initialized,
-output absent) — that's the docker-compose path. Operators get an
-informative `source` label so CLIs can show which one resolved.
+Step 3 requires shared/temporal to be applied. Operators get an informative
+`source` label so CLIs can show which one resolved.
 """
 
 from __future__ import annotations
@@ -25,15 +23,18 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-Source = Literal["flag", "env", "terraform", "default"]
+Source = Literal["flag", "env", "terraform"]
 
 _TF_DIR = Path(__file__).resolve().parent / "terraform"
 _OUTPUT_KEY = "cpu_pipeline_public_ip"
-_LOCALHOST = "localhost:7233"
 
 
 def resolve_operator_address(explicit: str | None) -> tuple[str, Source]:
-    """Return (address, source). See module docstring for resolution order."""
+    """Return (address, source). See module docstring for resolution order.
+
+    Raises `LookupError` if none of the sources yield an address — that means
+    shared/temporal isn't applied and no explicit address was passed.
+    """
     if explicit:
         return explicit, "flag"
     from_env = os.environ.get("TEMPORAL_ADDRESS")
@@ -42,13 +43,16 @@ def resolve_operator_address(explicit: str | None) -> tuple[str, Source]:
     from_tf = _read_terraform_output()
     if from_tf:
         return f"{from_tf}:7233", "terraform"
-    return _LOCALHOST, "default"
+    raise LookupError(
+        "no Temporal address available: pass --temporal-address, set "
+        "TEMPORAL_ADDRESS, or apply shared/temporal so its terraform output "
+        f"{_OUTPUT_KEY!r} is readable."
+    )
 
 
 def _read_terraform_output() -> str | None:
-    # All three failures collapse to "no output available" — caller falls
-    # back to localhost. Subprocess error, missing terraform, uninitialized
-    # module, key absent: same handling.
+    # All failures collapse to "no output available". Subprocess error,
+    # missing terraform, uninitialized module, key absent: same handling.
     try:
         result = subprocess.run(
             ["terraform", f"-chdir={_TF_DIR}", "output", "-json"],

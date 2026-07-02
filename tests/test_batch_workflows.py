@@ -7,7 +7,7 @@ failure-row construction, and string truncation — the parts most likely to
 have logic bugs and easiest to test in isolation.
 
 End-to-end workflow validation is done by submitting a small manifest
-against the local docker-compose Temporal stack — see prod/batch/README.md.
+against a reachable Temporal stack — see prod/batch/README.md.
 
 Run: python -m tests.test_batch_workflows
 """

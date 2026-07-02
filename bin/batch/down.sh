@@ -47,7 +47,7 @@ step "batch destroy"
 "$TF" batch destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
 step "shared/vllm destroy"
-"$TF" shared/vllm destroy -auto-approve -input=false -var "env_tag=prod" ${extra_args[@]+"${extra_args[@]}"}
+"$TF" shared/vllm destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}
 
 step "shared/temporal destroy"
 "$TF" shared/temporal destroy -auto-approve -input=false ${extra_args[@]+"${extra_args[@]}"}

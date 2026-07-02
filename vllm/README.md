@@ -4,19 +4,11 @@ Serve chandra-ocr, DeepSeek-OCR-2, dots.mocr, and olmOCR on EC2 via vLLM.
 
 ## Operator-side launch
 
-The vLLM box itself is terraform-managed. For the production / prod-tagged
-box that workers reach via EC2 tag lookup, use:
+The vLLM box itself is terraform-managed. Workers reach it via EC2 tag
+lookup (`role=vllm-<model>`). Bring it up as part of either motif:
 
 ```bash
-bin/batch/up.sh           # or bin/live/up.sh — both bring up env_tag=prod
-```
-
-For the hybrid local-dev escape hatch (Mac drives `etl/cli.py` against a
-dev-tagged AWS vLLM, no Temporal):
-
-```bash
-bin/dev/up_vllm.sh
-bin/dev/down_vllm.sh
+bin/batch/up.sh           # or bin/live/up.sh — both include shared/vllm
 ```
 
 See `bin/README.md` for the operator manual.

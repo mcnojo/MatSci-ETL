@@ -210,7 +210,6 @@ Environment=PYTHONUNBUFFERED=1
 Environment=AWS_REGION=${aws_region}
 Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
-Environment=OCR_VLLM_ENV_TAG=prod
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
 Environment=OMP_NUM_THREADS=${torch_num_threads}
 Environment=MKL_NUM_THREADS=${torch_num_threads}
@@ -301,7 +300,6 @@ Environment=PYTHONUNBUFFERED=1
 Environment=AWS_REGION=${aws_region}
 Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
-Environment=OCR_VLLM_ENV_TAG=prod
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
 ExecStartPre=/usr/local/bin/ocr-ingestion-env-fetch.sh ${aws_region} ${live_ssm_prefix}/queue_url $SECRETS_DIR/live.env
 ExecStart=$INSTALL_DIR/env/bin/python -m prod.live.ingestion.consumer

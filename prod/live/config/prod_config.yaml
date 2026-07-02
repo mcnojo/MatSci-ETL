@@ -15,46 +15,15 @@ ingestion:
   poll_interval_s: 5
   visibility_timeout_s: 300
 
-# Storage
-storage:
-  backend: "s3"
-  s3:
-    bucket: "chem-lit-artifacts"
-    prefix: ""
-    region: "us-east-1"
-
-# Pipeline config (merged with etl/config/pipeline_config.yaml)
-# In prod the pipeline config is loaded from etl/config/pipeline_config.yaml
-# with these overrides applied. vision_server.base_url stays as the
-# `vllm-instance://` URL — workers resolve at activity boundary via EC2 tag
-# lookup (shared/vllm/resolve.py), driven by OCR_VLLM_ENV_TAG +
-# OCR_VLLM_PREFER_PRIVATE_IP set in the worker's systemd unit.
+# Pipeline overlay applied on top of etl/config/pipeline_config.yaml.
+# Only carries scale-run deltas from the base — vision + tree_llm URLs, s3
+# paths, and model ids all live in the base config. Workers resolve
+# `vllm-instance://` URLs at activity boundary via EC2 tag lookup
+# (shared/vllm/resolve.py), driven by OCR_VLLM_PREFER_PRIVATE_IP set in the
+# worker's systemd unit.
 pipeline_overrides:
   output:
-    # Final tree.json lands at {kb_root}/{document_id}/tree.json. Shared between
-    # live and batch (batch defaults --prod-overlay to this same file), so both
-    # write into s3://chem-lit-artifacts/trees/. Outside the assets/ lifecycle rule.
-    kb_root: "s3://chem-lit-artifacts/trees"
-    save_page_images: false         # no need to persist full-page renders in prod
-    # AssetExtractor publishes element PNGs (and page PNGs when save_page_images=true)
-    # here. Cross-worker reads (CPU->GPU chandra) go through shared.s3_io.get_bytes,
-    # which routes s3:// transparently. Same bucket as storage.s3.bucket below.
-    assets_uri_prefix: "s3://chem-lit-artifacts/assets"
-
-  # tree_llm runs on its own dedicated GPU box (shared/vllm var.models["gemma"]).
-  # Switches from ollama/gemma4-mlx (laptop dev) to vLLM/gemma-4-E4B-it (prod) —
-  # the instruction-tuned variant ships a chat template; the base `-E4B` does not
-  # and vLLM 400s /v1/chat/completions on transformers ≥4.44. Must match the
-  # var.models["gemma"].hf_model_id exactly — vLLM serves under the HF id and
-  # the client sends it verbatim. Resolver picks the box up via role=vllm-gemma-prod.
-  tree_llm:
-    provider: "openai"              # vLLM exposes the OpenAI Chat Completions API
-    model: "google/gemma-4-E4B-it"
-    model_fast: "google/gemma-4-E4B-it"
-    base_url: "vllm-instance://gemma:8005/v1"
-    api_key_env: null
-    prompt_style: "local"
-    max_response_tokens: 16384      # response cap on each chat call. Paired with tree.max_tokens_per_node=24000 in pipeline_config.yaml; both fit comfortably inside gemma's 128K window.
+    save_page_images: false         # skip full-page renders on scale runs
 
 # EC2 instance tags (informational; not read by code — the actual instance
 # types live in shared/vllm/terraform/variables.tf var.models).
@@ -63,8 +32,8 @@ instances:
     name: "ocr-bench-cpu-pipeline-01"
     type: "m7i.xlarge"
   gpu_chandra:
-    name: "ocr-bench-vllm-chandra-prod"
+    name: "ocr-bench-vllm-chandra"
     type: "g6.xlarge"               # L4 24GB — dedicated chandra OCR.
   gpu_gemma:
-    name: "ocr-bench-vllm-gemma-prod"
+    name: "ocr-bench-vllm-gemma"
     type: "g6e.xlarge"              # L40S 48GB — dedicated gemma tree_llm, 128K context.

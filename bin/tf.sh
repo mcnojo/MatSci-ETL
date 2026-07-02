@@ -22,7 +22,7 @@ usage: bin/tf.sh <module> <action> [args...]
 
   bin/tf.sh batch init
   bin/tf.sh batch plan
-  bin/tf.sh shared/vllm apply -var env_tag=dev
+  bin/tf.sh shared/vllm apply
 EOF
   exit 1
 }

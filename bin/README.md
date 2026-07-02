@@ -15,7 +15,6 @@ the happy path.
 | -------- | --------------------------------------------------- | ----------------------------------------- |
 | `batch`  | bounded jobs of 10–10,000+ PDFs, throughput-tuned  | upload PDFs + manifest -> Lambda fires    |
 | `live`   | bursty arrivals, per-PDF latency-sensitive          | upload PDF -> S3->SQS->consumer fires       |
-| `dev`    | hybrid local-dev (Mac drives, AWS hosts vLLM only)  | runs `etl/cli.py` from Mac as usual       |
 
 ---
 
@@ -75,18 +74,6 @@ bin/live/down.sh
 
 Each PDF upload triggers a `ProcessPdfWorkflow` execution within a few seconds.
 
-### Dev (hybrid local-dev)
-
-```bash
-bin/dev/up_vllm.sh
-# vllm public IP echoed. Run etl/cli.py from your Mac as usual; it resolves
-# the vision_server URL via EC2 tag lookup (role=vllm-chandra-dev).
-bin/dev/down_vllm.sh
-```
-
-No Temporal, no SSM read, no batch fleet. Operator continues to run
-`etl/cli.py` with Ollama locally for `tree_llm`.
-
 ---
 
 ## Recovery
@@ -141,11 +128,8 @@ bin/
 │   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + batch + wait
 │   ├── submit.sh             # validate manifest, upload PDFs, upload manifest LAST
 │   └── down.sh               # shared/vllm + batch + shared/temporal destroy (platform untouched)
-├── live/
-│   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + live + wait
-│   ├── submit.sh             # upload PDFs to live/incoming/ (S3 -> SQS fires)
-│   └── down.sh               # shared/vllm + live + shared/temporal destroy (platform untouched)
-└── dev/
-    ├── up_vllm.sh            # shared/vllm only, env_tag=dev
-    └── down_vllm.sh
+└── live/
+    ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + live + wait
+    ├── submit.sh             # upload PDFs to live/incoming/ (S3 -> SQS fires)
+    └── down.sh               # shared/vllm + live + shared/temporal destroy (platform untouched)
 ```

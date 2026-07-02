@@ -51,7 +51,7 @@ def _load_batch_cfg(path: str) -> dict:
 @click.option("--temporal-address", default=None,
               help="Temporal gRPC endpoint. Resolution order: flag -> "
                    "TEMPORAL_ADDRESS env -> shared/temporal terraform output "
-                   "cpu_pipeline_public_ip:7233 -> localhost:7233.")
+                   "cpu_pipeline_public_ip:7233.")
 @click.option("--temporal-namespace", default="default", show_default=True)
 @click.option("--batch-config", default="prod/batch/config/batch_config.yaml",
               show_default=True,

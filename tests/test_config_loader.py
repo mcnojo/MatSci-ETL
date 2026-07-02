@@ -48,21 +48,6 @@ def test_absolute_kb_root_passthrough():
         assert cfg["output"]["kb_root"] == "/var/lib/kb"
 
 
-def test_storage_local_root_anchored_too():
-    """The S3 scaffold's storage.local.root field is also anchored.
-
-    Not currently read by activities, but resolving it here means the future
-    storage.create_store() cutover won't need to repeat this logic.
-    """
-    with tempfile.TemporaryDirectory() as d:
-        d = Path(d).resolve()
-        cfg_path = _write(d, "pipeline_config.yaml", {
-            "storage": {"backend": "local", "local": {"root": "./kb"}},
-        })
-        cfg = load_pipeline_config(cfg_path)
-        assert cfg["storage"]["local"]["root"] == str(d / "kb")
-
-
 def test_missing_fields_tolerated():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d).resolve()
@@ -71,7 +56,6 @@ def test_missing_fields_tolerated():
         # _config_dir is always set
         assert cfg["_config_dir"] == str(d)
         assert "output" not in cfg
-        assert "storage" not in cfg
 
 
 def test_config_dir_is_absolute_and_resolved():

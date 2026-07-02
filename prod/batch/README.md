@@ -75,8 +75,8 @@ python -m prod.batch.cli wait-for-workers --queues cpu,gpu
 `submit` defaults `--prod-overlay` to `prod/live/config/prod_config.yaml` —
 the same overlay live uses, so both motifs write trees to
 `s3://chem-lit-artifacts/trees/<document_id>/tree.json` (via
-`pipeline_overrides.output.kb_root`). Pass `--prod-overlay ''` for
-docker-compose dev runs.
+`output.kb_root` in the base pipeline config). Pass `--prod-overlay ''`
+to skip the scale-run knobs.
 
 Fleet wiring (region, ASG names, scale targets, registration timeout) and
 the artifact bucket are read from `prod/batch/terraform` outputs at submit
@@ -103,8 +103,7 @@ Reports CLI (cross-motif analytics) lives at `python -m prod.reports`.
 python -m tests.test_batch_planner       # sharding, ID format, validation
 python -m tests.test_batch_workflows     # pure helpers
 
-# Integration smoke (needs docker-compose Temporal + worker + reachable vLLM):
-make infra && make worker
+# Integration smoke (needs a reachable Temporal + worker + vLLM):
 python -m tests.integration.test_batch_e2e
 ```
 

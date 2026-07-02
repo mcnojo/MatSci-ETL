@@ -1,6 +1,6 @@
 # One row per model. Consumers iterate this map instead of reading scalar
 # per-role outputs. Adding a third model is a one-line edit to var.models —
-# every consumer (wait_health, dev/up_vllm) picks it up automatically.
+# every consumer (wait_health, live/batch up.sh) picks it up automatically.
 output "models" {
   description = "Per-model deployment metadata. Keys match var.models keys (e.g. \"chandra\", \"gemma\")."
   value = {
@@ -15,9 +15,4 @@ output "models" {
       hf_model_id       = var.models[k].hf_model_id
     }
   }
-}
-
-output "env_tag" {
-  description = "dev | prod. Mirrors the input; lets downstream modules assert which env they're talking to."
-  value       = var.env_tag
 }

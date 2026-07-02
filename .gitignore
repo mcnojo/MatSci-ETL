@@ -258,4 +258,4 @@ override.tf.json
 terraform.rc
 infra/terraform/batch/.terraform.lock.hcl
 ether_papers
-how_to.md
+trees/*

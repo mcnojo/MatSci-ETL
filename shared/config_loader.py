@@ -25,7 +25,6 @@ import yaml
 _RELATIVE_PATH_FIELDS: tuple[tuple[str, ...], ...] = (
     ("output", "kb_root"),
     ("output", "assets_uri_prefix"),  # only anchored when local; s3:// values pass through
-    ("storage", "local", "root"),  # scaffolding for the future S3 cutover
 )
 
 
@@ -71,15 +70,11 @@ def apply_prod_overlay(config: dict, overlay_path: str | Path) -> dict:
       pipeline_overrides:
         <section>:
           <key>: <value>      # None entries are ignored (lets overlays "clear" defaults)
-      storage:                  # optional; if present, replaces config['storage'] wholesale
-        ...
 
     pipeline_overrides is merged one level deep (section dicts get `.update(...)`d).
-    storage is replaced wholesale because prod toggles backend=local->s3 which can't
-    be expressed as a key-merge.
 
-    Single source of truth for the production-vs-dev merge: live's SQS consumer
-    and batch's `cli submit` both go through here. Missing overlay file raises
+    Single source of truth for the overlay merge: live's SQS consumer and
+    batch's `cli submit` both go through here. Missing overlay file raises
     FileNotFoundError so misconfiguration is loud, not silent.
     """
     overlay_path = Path(overlay_path).resolve()
@@ -94,8 +89,5 @@ def apply_prod_overlay(config: dict, overlay_path: str | Path) -> dict:
             )
         else:
             config[section] = values
-
-    if "storage" in overlay:
-        config["storage"] = overlay["storage"]
 
     return config

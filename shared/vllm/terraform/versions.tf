@@ -12,7 +12,7 @@ provider "aws" {
   region = var.region
   default_tags {
     tags = merge(
-      { Project = "ocr-benchmarking", Env = "common-vllm-${var.env_tag}" },
+      { Project = "ocr-benchmarking", Env = "common-vllm" },
       var.tags,
     )
   }
