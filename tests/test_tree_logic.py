@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from pipeline.page_assembly import assemble_page_text
-from pipeline.tree_logic import BuildOpt, LlmResult, build_tree
+from pipeline.tree_logic import BuildOpt, LlmResult, build_tree, collapse_over_decomposed_leaves
 from shared.prompts.etl import get_prompt
 from shared.schemas import DocumentTree
 from shared.temporal.activity_models import PromptSpec
@@ -108,6 +108,39 @@ def test_build_tree_smoke():
     assert tree.root_nodes[0].summary, "expected node summary populated"
 
 
+def test_collapse_over_decomposed_leaves():
+    body = {"title": "Introduction", "start_index": 1, "end_index": 5, "nodes": []}
+    citations = [
+        {"title": "S. Y. Sayed, K. P. Yao, D. G. Kwabi, ...",     "start_index": 48, "end_index": 48},
+        {"title": "T. Ogasawara, A. Debart, M. Holzapfel, ...",   "start_index": 48, "end_index": 48},
+        {"title": "F. Mizuno, S. Nakanishi, Y. Kotani, ...",      "start_index": 48, "end_index": 48},
+        {"title": "S. A. Freunberger, Y. Chen, Z. Peng, ...",     "start_index": 48, "end_index": 48},
+        {"title": "V. S. Bryantsev, V. Giordani, W. Walker, ...", "start_index": 48, "end_index": 48},
+        {"title": "M. Zhang, Y. Li, Nano Energy, 2020, 6, 15",    "start_index": 49, "end_index": 49},
+    ]
+    tree = [body] + citations
+    out = collapse_over_decomposed_leaves(tree)
+    assert len(out) == 2, f"expected [Intro, References], got {len(out)}"
+    assert out[0]["title"] == "Introduction"
+    assert out[1]["title"] == "References"
+    assert out[1]["start_index"] == 48
+    assert out[1]["end_index"] == 49
+    assert out[1]["nodes"] == []
+
+    # Short run stays intact (real subsections might have 2-3 initial-shaped titles).
+    short = [
+        {"title": "F. Rocket, Analysis, 2022", "start_index": 10, "end_index": 10},
+        {"title": "G. Mars, Journal, 2023",    "start_index": 11, "end_index": 11},
+    ]
+    assert collapse_over_decomposed_leaves(short) == short, "must not collapse < min-run"
+
+    # Idempotent.
+    twice = collapse_over_decomposed_leaves(collapse_over_decomposed_leaves(tree))
+    assert twice == out
+
+
 if __name__ == "__main__":
     test_build_tree_smoke()
     print("PASS: tree_logic smoke test")
+    test_collapse_over_decomposed_leaves()
+    print("PASS: collapse_over_decomposed_leaves")

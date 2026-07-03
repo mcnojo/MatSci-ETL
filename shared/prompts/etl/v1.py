@@ -280,6 +280,21 @@ def _add_page_number_to_toc_upstream(*, part: str, structure) -> str:
 _add_page_number_to_toc_local = _add_page_number_to_toc_upstream
 
 
+# Guardrail injected into every tree-generation prompt. Small deliberate
+# addition to upstream, targeting the specific failure mode where the model
+# treats each entry of a References/Bibliography/SI list as its own section.
+_STRUCTURAL_RULES = """
+Structural rules:
+- "References", "Bibliography", "Acknowledgments", "Supporting Information",
+  "Supplementary Information", "Author contributions", and similar
+  end-matter sections MUST each be a single leaf entry. Do NOT emit one
+  section per citation, footnote, list bullet, table row, or figure caption.
+- A line consisting of author initials and surnames followed by a journal
+  citation (e.g. "S. Y. Sayed, K. P. Yao, ..., J. Am. Chem. Soc., 2016, 138, ...")
+  is a bibliography entry, not a section — never emit it as a section title.
+"""
+
+
 # generate_toc_init
 
 def _generate_toc_init_upstream(*, part: str) -> str:
@@ -313,6 +328,7 @@ def _generate_toc_init_upstream(*, part: str) -> str:
 
 
     Directly return the final JSON object. Do not output anything else."""
+        + _STRUCTURAL_RULES
         + "\nGiven text\n:" + part
     )
 
@@ -355,6 +371,7 @@ def _generate_toc_init_with_hint_upstream(*, part: str, toc_hint: str) -> str:
 
 
     Directly return the final JSON object. Do not output anything else."""
+        + _STRUCTURAL_RULES
         + "\nTable of contents (hint):\n" + toc_hint
         + "\nGiven text\n:" + part
     )
@@ -395,6 +412,7 @@ def _generate_toc_continue_upstream(*, toc_content, part: str) -> str:
         }
 
     Directly return the JSON object with the additional sections. Do not output anything else."""
+        + _STRUCTURAL_RULES
         + "\nGiven text\n:" + part
         + "\nPrevious tree structure\n:" + json.dumps({"toc": toc_content}, indent=2)
     )

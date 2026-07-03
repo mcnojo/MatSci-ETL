@@ -300,6 +300,69 @@ def page_list_to_group_indices(
     return groups
 
 
+# Citation-shape guardrail against LLM over-decomposition of bibliographies.
+# Two orthogonal signals (either is sufficient):
+#   INITIALS — leading author initials, e.g. "S. Y. Sayed, K. P. Yao, ..."
+#   JOURNAL  — vol/year/page triple, e.g. ", 2016, 6, 1600757."
+# When >= MIN_RUN consecutive sibling leaves match, they collapse to one
+# "References" node. Runs shorter than that are left alone (avoid clobbering
+# a real 2-3-item subsection that happens to look citation-shaped).
+_CITATION_INITIALS_RE = re.compile(r"^([A-Z]\.[\s ]*){1,3}[A-Z][A-Za-zÀ-ſ´'’`\-]+")
+_CITATION_JOURNAL_RE = re.compile(r",\s*(19|20)\d{2},\s*\d+,\s*\d+")
+_CITATION_MIN_RUN = 5
+
+
+def _looks_like_citation(title) -> bool:
+    if not isinstance(title, str) or not title:
+        return False
+    return bool(_CITATION_INITIALS_RE.match(title) or _CITATION_JOURNAL_RE.search(title))
+
+
+def _collapse_citation_run(children: list[dict]) -> list[dict]:
+    # Scan siblings left-to-right; merge maximal runs of leaves whose titles
+    # look like citations. Leaves = no "nodes" key (see list_to_tree's cleanup).
+    out: list[dict] = []
+    i = 0
+    while i < len(children):
+        if children[i].get("nodes") or not _looks_like_citation(children[i].get("title", "")):
+            out.append(children[i]); i += 1; continue
+        j = i
+        while (j < len(children)
+               and not children[j].get("nodes")
+               and _looks_like_citation(children[j].get("title", ""))):
+            j += 1
+        run = children[i:j]
+        if len(run) >= _CITATION_MIN_RUN:
+            starts = [n.get("start_index") for n in run if n.get("start_index") is not None]
+            ends   = [n.get("end_index")   for n in run if n.get("end_index")   is not None]
+            merged = {
+                "title": "References",
+                "start_index": min(starts) if starts else None,
+                "end_index":   max(ends)   if ends   else None,
+                "nodes": [],
+            }
+            log.warning(
+                "collapsed %d citation-shaped sibling leaves into 'References' (pp %s-%s)",
+                len(run), merged["start_index"], merged["end_index"],
+            )
+            out.append(merged)
+        else:
+            out.extend(run)
+        i = j
+    return out
+
+
+def collapse_over_decomposed_leaves(tree):
+    # Bottom-up so a citation run inside a nested parent is caught before its
+    # parent is evaluated. Idempotent: re-running yields the same tree.
+    if not isinstance(tree, list):
+        return tree
+    for node in tree:
+        if isinstance(node, dict) and node.get("nodes"):
+            node["nodes"] = collapse_over_decomposed_leaves(node["nodes"])
+    return _collapse_citation_run(tree)
+
+
 def post_processing(structure, end_physical_index):
     for i, item in enumerate(structure):
         item["start_index"] = item.get("physical_index")
@@ -314,12 +377,12 @@ def post_processing(structure, end_physical_index):
 
     tree = list_to_tree(structure)
     if tree:
-        return tree
+        return collapse_over_decomposed_leaves(tree)
 
     for node in structure:
         node.pop("appear_start", None)
         node.pop("physical_index", None)
-    return structure
+    return collapse_over_decomposed_leaves(structure)
 
 
 def structure_to_list(structure):
