@@ -88,3 +88,26 @@ def assign_elements_to_tree(
             target_node.visual_elements.append(VisualElement(**elem_dict))
 
     return tree
+
+
+def attach_raw_text_to_tree(
+    tree: DocumentTree, pages: list[tuple[str, int]],
+) -> DocumentTree:
+    """Populate TreeNode.raw_text for every node with the concatenated OCR text
+    over [start_index, end_index] (1-based, inclusive). Same page-scoping as
+    the summarizer's <<<section-content>>>, so summary faithfulness can be
+    checked against the exact source it was derived from.
+
+    Non-leaf raw_text overlaps its children's — accepted for benchmarking
+    convenience (any node reads self-contained). Deterministic and idempotent.
+    """
+    def _walk(node: TreeNode) -> None:
+        lo = max(0, node.start_index - 1)
+        hi = min(len(pages), node.end_index)
+        node.raw_text = "".join(pages[i][0] for i in range(lo, hi))
+        for child in node.nodes:
+            _walk(child)
+
+    for root in tree.root_nodes:
+        _walk(root)
+    return tree

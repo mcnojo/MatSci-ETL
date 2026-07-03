@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
     from pipeline.cpu_activities import (
         AssignElementsInput,
         AttachOcrInput,
+        AttachRawTextInput,
         ExtractAssetsInput,
         FinalizeInput,
         LoadPagesInput,
@@ -24,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
         OcrUpdate,
         assign_elements_activity,
         attach_ocr_activity,
+        attach_raw_text_activity,
         extract_assets_activity,
         finalize_activity,
         load_pages_activity,
@@ -159,7 +161,7 @@ class ProcessPdfWorkflow:
         node_count = sum(1 for _ in _flatten(tree.root_nodes))
 
         if input.skip_enrichment:
-            return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
+            return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q, pages_uri)
 
         page_ranges = [
             (n.start_index, n.end_index) for n in _flatten(tree.root_nodes)
@@ -221,7 +223,7 @@ class ProcessPdfWorkflow:
         if config.get("enrichment", {}).get("figure_aware_resummarize", True):
             await self._resummarize(tree, config, summary, gpu_q, config_uri)
 
-        return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q)
+        return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q, pages_uri)
 
     def _make_call_llm(self, config_uri: str, summary: dict, gpu_q: str):
         async def call(model, spec: PromptSpec, *, json_mode=False, temperature=0.0) -> LlmResult:
@@ -453,7 +455,21 @@ class ProcessPdfWorkflow:
         node_count: int,
         total_pages: int,
         cpu_q: str,
+        pages_uri: str,
     ) -> ProcessPdfWorkflowOutput:
+        # Attach the section-scoped raw OCR text per node so downstream
+        # benchmarking can check summary faithfulness against the exact source.
+        # Runs before serialization; deterministic — no LLM.
+        raw_out = await workflow.execute_activity(
+            attach_raw_text_activity,
+            AttachRawTextInput(tree=tree, pages_uri=pages_uri),
+            task_queue=cpu_q,
+            start_to_close_timeout=CPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=CPU_HEARTBEAT_TIMEOUT,
+            retry_policy=DEFAULT_RETRY_POLICY,
+        )
+        tree = raw_out.tree
+
         output_path = self._tree_path(input, config)
         final_out = await workflow.execute_activity(
             finalize_activity,

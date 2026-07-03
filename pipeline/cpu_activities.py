@@ -37,7 +37,7 @@ from shared.temporal.activity_models import (
 
 from .asset_extractor import AssetExtractor
 from .chunker import chunk_document
-from .enricher import assign_elements_to_tree
+from .enricher import assign_elements_to_tree, attach_raw_text_to_tree
 from .heartbeat import await_with_heartbeats
 from .tree_logic import count_tokens
 
@@ -132,6 +132,17 @@ class AssignElementsInput(BaseModel):
 
 
 class AssignElementsOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tree: DocumentTree
+
+
+class AttachRawTextInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tree: DocumentTree
+    pages_uri: str
+
+
+class AttachRawTextOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
     tree: DocumentTree
 
@@ -360,6 +371,13 @@ async def assign_elements_activity(input: AssignElementsInput) -> AssignElements
     return AssignElementsOutput(tree=tree)
 
 
+@activity.defn(name="process-pdf_attach-raw-text")
+async def attach_raw_text_activity(input: AttachRawTextInput) -> AttachRawTextOutput:
+    pages_raw = json.loads(get_bytes(input.pages_uri).decode("utf-8"))
+    pages: list[tuple[str, int]] = [(t, n) for t, n in pages_raw]
+    return AttachRawTextOutput(tree=attach_raw_text_to_tree(input.tree, pages))
+
+
 @activity.defn(name="process-pdf_finalize")
 async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
     tree_data = input.tree.model_dump()
@@ -493,6 +511,7 @@ CPU_ACTIVITIES = [
     extract_assets_activity,
     attach_ocr_activity,
     assign_elements_activity,
+    attach_raw_text_activity,
     finalize_activity,
     load_tree_activity,
     chunk_document_activity,

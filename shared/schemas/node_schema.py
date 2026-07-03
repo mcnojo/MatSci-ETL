@@ -37,6 +37,11 @@ class TreeNode(BaseModel):
     start_index: int  # 1-based physical page (inclusive)
     end_index: int    # 1-based physical page (inclusive)
     summary: Optional[str] = None
+    # Concatenated page-range OCR text over [start_index, end_index]. Populated
+    # by attach_raw_text_activity — same scoping as the summarizer's
+    # <<<section-content>>> so summary faithfulness can be benchmarked against
+    # the exact source it was derived from.
+    raw_text: Optional[str] = None
     nodes: list["TreeNode"] = Field(default_factory=list)
     source: Optional[NodeSource] = None
     visual_elements: list[VisualElement] = Field(default_factory=list)
