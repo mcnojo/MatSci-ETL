@@ -8,14 +8,49 @@ header {
 }
 .brand { font-weight: 600; color: #fff; }
 header select { background: #16213e; color: #e0e0e0; border: 1px solid #333; padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.85rem; }
-#status { font-size: 0.75rem; color: #88a; margin-left: auto; }
+#progress { font-size: 0.72rem; color: #aab; }
+#status { font-size: 0.72rem; color: #88a; margin-left: auto; }
 
 main { flex: 1; display: flex; min-height: 0; }
 #pdf-pane, #tree-pane { flex: 1; min-width: 0; overflow: auto; padding: 1rem; }
 #pdf-pane { background: #0d0d1a; border-right: 1px solid #000; }
 #tree-pane { background: #16213e; }
 
-#pdf canvas.page { display: block; margin: 0 auto 0.8rem; box-shadow: 0 2px 8px rgba(0,0,0,0.6); width: 100%; height: auto; }
+/* PDF pages: page-wrap holds canvas + overlay so bboxes anchor to page origin */
+.page-wrap { position: relative; margin: 0 auto 0.8rem; box-shadow: 0 2px 8px rgba(0,0,0,0.6); }
+.page-wrap canvas.page { display: block; width: 100%; height: 100%; }
+.page-wrap .overlay { position: absolute; inset: 0; pointer-events: none; }
+
+/* bbox overlays */
+.bbox {
+  position: absolute;
+  border: 2px solid rgba(136,187,255,0.7);
+  background: rgba(136,187,255,0.06);
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.2s;
+}
+.bbox:hover { background: rgba(136,187,255,0.18); border-color: rgba(136,187,255,1); }
+.bbox.t-figure { border-color: rgba(233,69,96,0.7); background: rgba(233,69,96,0.05); }
+.bbox.t-figure:hover { background: rgba(233,69,96,0.18); border-color: rgba(233,69,96,1); }
+.bbox.t-table  { border-color: rgba(123,104,238,0.7); background: rgba(123,104,238,0.05); }
+.bbox.t-table:hover  { background: rgba(123,104,238,0.18); border-color: rgba(123,104,238,1); }
+.bbox.t-isolate_formula { border-color: rgba(245,166,35,0.7); background: rgba(245,166,35,0.05); }
+.bbox.pos-yes { border-color: rgba(80,200,120,0.95) !important; box-shadow: 0 0 0 1px rgba(80,200,120,0.4) inset; }
+.bbox.pos-no  { border-color: rgba(255,90,90,0.95) !important; background: rgba(255,90,90,0.12) !important; }
+.bbox.flash   { animation: flash 1.6s ease-out; }
+@keyframes flash { 0% { box-shadow: 0 0 0 6px rgba(255,255,180,0.8); } 100% { box-shadow: none; } }
+
+.bbox-tag {
+  position: absolute; top: -1.1rem; left: -1px;
+  background: rgba(15,52,96,0.9); color: #fff;
+  font-size: 0.6rem; padding: 0 0.3rem; border-radius: 2px;
+  font-family: ui-monospace, monospace; white-space: nowrap;
+  pointer-events: none;
+}
+
+.error { color: #e94560; padding: 1rem; }
 
 /* tree nodes */
 .node { background: #1a1a2e; border-radius: 6px; margin-bottom: 0.6rem; padding: 0.6rem 0.8rem; border: 1px solid #222; }
@@ -27,6 +62,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .node[open] > summary::before { content: "▾"; }
 .node .title { color: #fff; font-weight: 500; }
 .node .meta { color: #667; font-size: 0.75rem; }
+.node .review-inline { margin-left: auto; }
 
 .summary-md { padding: 0.6rem 0 0.4rem; font-size: 0.85rem; line-height: 1.55; color: #c8c8d8; }
 .summary-md p { margin: 0.4rem 0; }
@@ -35,7 +71,8 @@ main { flex: 1; display: flex; min-height: 0; }
 
 /* visual elements */
 .visuals { margin-top: 0.4rem; display: flex; flex-direction: column; gap: 0.3rem; }
-.visual { background: #0d1b36; border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.8rem; }
+.visual { background: #0d1b36; border-radius: 4px; padding: 0.4rem 0.6rem; font-size: 0.8rem; scroll-margin-top: 4rem; }
+.visual.flash { outline: 2px solid rgba(255,255,180,0.9); animation: flash 1.6s ease-out; }
 .visual summary { cursor: pointer; color: #aac; display: flex; gap: 0.5rem; align-items: center; }
 .visual summary::-webkit-details-marker { display: none; }
 .visual summary::before { content: "▸"; color: #667; font-size: 0.65rem; }
@@ -47,6 +84,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .visual[data-t="figure"] .type { background: #3a1525; color: #e94560; }
 .visual[data-t="table"] .type  { background: #1f1a3e; color: #7b68ee; }
 .visual[data-t="isolate_formula"] .type { background: #0d1b36; color: #88bbff; }
+.pgtag { color:#556; font-size: 0.7rem; margin-left:auto; }
 
 .visual-body { padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .visual-body > img { max-width: 100%; border-radius: 3px; background: #fff; }
@@ -55,6 +93,28 @@ main { flex: 1; display: flex; min-height: 0; }
   font-size: 0.7rem; color: #88a; text-transform: uppercase; letter-spacing: 0.05em;
   margin-bottom: 0.3rem; font-weight: 500;
 }
+
+/* review row: sits at top of a visual element's expanded body */
+.review-row { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+
+/* tri-state review button. unset/yes/no share layout; state colors border+bg. */
+button.review {
+  background: #16213e; color: #ccd; border: 1px solid #2a3a5e;
+  padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.68rem;
+  font-family: ui-monospace, monospace; cursor: pointer; letter-spacing: 0.02em;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+button.review:hover { background: #1e2a4a; }
+button.review.yes { background: rgba(80,200,120,0.15); color: #7fdba0; border-color: rgba(80,200,120,0.7); }
+button.review.no  { background: rgba(255,90,90,0.15); color: #ff8888; border-color: rgba(255,90,90,0.7); }
+button.review.unset { }
+
+button.locate {
+  background: #16213e; color: #88bbff; border: 1px solid #2a3a5e;
+  padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.68rem;
+  cursor: pointer; margin-left: auto;
+}
+button.locate:hover { background: #1e2a4a; border-color: #88bbff; }
 
 /* chandra OCR HTML: label-prefixed bordered blocks */
 .ocr div[data-label] { margin: 0.3rem 0; padding: 0.4rem 0.5rem 0.4rem 0.6rem; border-left: 3px solid #2a3a5e; }
