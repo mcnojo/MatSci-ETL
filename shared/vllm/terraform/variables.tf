@@ -61,7 +61,7 @@ variable "models" {
           port                   = 8006
           max_model_len          = 8192 # bge-m3 stops attending past 8K; larger wastes KV.
           gpu_memory_utilization = 0.15 # ~3.6 GB on L4 24 — bge-m3 fp16 ~2.2 GB + margin.
-          extra_args             = "--task embed --served-model-name BAAI/bge-m3 --dtype auto"
+          extra_args             = "--runner pooling --served-model-name BAAI/bge-m3 --dtype auto"
         },
       ]
     }
