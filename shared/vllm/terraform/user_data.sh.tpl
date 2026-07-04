@@ -17,14 +17,23 @@ sudo -u "$SERVE_USER" -H bash -lc 'pip install vllm openai'
 echo "[bootstrap] log file"
 install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"
 
-%{ for svc in services ~}
+%{ for i, svc in services ~}
 echo "[bootstrap] systemd: ocr-vllm-${svc.key} (${svc.hf_model_id} :${svc.port})"
 # `vllm` lives in the serve user's ~/.local/bin per the DLAMI Python layout.
+# Co-hosted secondaries (i>0) serialize behind the primary: After= + a hard
+# ExecStartPre that blocks until the primary answers /health, so CUDA context
+# creation and gpu_memory_utilization budgeting happen sequentially on the
+# single shared device. Without this, both processes race torch.cuda.init and
+# the secondary usually loses (hangs on the driver lock or misreads free VRAM
+# and OOMs on model load).
 cat > /etc/systemd/system/ocr-vllm-${svc.key}.service <<UNIT_EOF
 [Unit]
 Description=vLLM serve ${svc.hf_model_id} (${svc.key})
-After=network-online.target
+After=network-online.target%{ if i > 0 } ocr-vllm-${services[0].key}.service%{ endif }
 Wants=network-online.target
+%{ if i > 0 ~}
+Requires=ocr-vllm-${services[0].key}.service
+%{ endif ~}
 
 [Service]
 Type=simple
@@ -32,6 +41,9 @@ User=$SERVE_USER
 WorkingDirectory=/home/$SERVE_USER
 Environment=HOME=/home/$SERVE_USER
 Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+%{ if i > 0 ~}
+ExecStartPre=/bin/bash -c 'until curl -fsS --max-time 2 http://localhost:${services[0].port}/health >/dev/null 2>&1; do sleep 5; done'
+%{ endif ~}
 ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${svc.hf_model_id} \\
     --port ${svc.port} \\
     --tensor-parallel-size 1 \\
