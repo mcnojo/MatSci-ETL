@@ -1,0 +1,15 @@
+# Temporal server dynamic config overrides.
+# Loaded via DYNAMIC_CONFIG_FILE_PATH (see ./docker-compose.yml); polled every 60s.
+#
+# Raise per-event blob ceiling 2 MB -> 16 MB so the OCR-enriched DocumentTree
+# round-trips through workflow event history. Warn at 8 MB so growth shows up
+# before stalls. Don't raise further without URI-ifying the tree -- replay
+# slows considerably above ~16 MB events.
+
+limit.blobSize.error:
+  - value: 16777216
+    constraints: {}
+
+limit.blobSize.warn:
+  - value: 8388608
+    constraints: {}

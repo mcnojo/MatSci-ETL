@@ -178,6 +178,10 @@ echo "[bootstrap] cloudwatch agent disabled via log_collection_enabled=0"
 fi
 
 echo "[bootstrap] systemd: ocr-temporal-stack"
+# WorkingDirectory pins the compose lookup path. docker-compose.yml + its
+# dynamicconfig.yaml volume mount live under shared/temporal/ (co-located
+# with the module that owns them); the relative `./dynamicconfig.yaml`
+# volume in the compose file resolves off this directory.
 cat > /etc/systemd/system/ocr-temporal-stack.service <<UNIT_EOF
 [Unit]
 Description=OCR Temporal stack (Postgres + Temporal + UI via docker compose)
@@ -187,7 +191,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=true
-WorkingDirectory=$INSTALL_DIR
+WorkingDirectory=$INSTALL_DIR/shared/temporal
 ExecStart=/usr/bin/docker compose up -d --wait
 ExecStop=/usr/bin/docker compose down
 
