@@ -5,10 +5,12 @@ installs bare `pip install .` and skips the ~3-4 GB pipeline-cpu extra.
 """
 
 import base64
+import io
 import json
 import time
 from collections import OrderedDict
 
+import numpy as np
 from openai import AsyncOpenAI
 from temporalio import activity
 
@@ -142,10 +144,16 @@ async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOu
 @activity.defn(name="index-document_embed-chunks")
 async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
     """Read chunks JSON, batch-embed via the vLLM /embeddings endpoint, write
-    embeddings JSON. One-shot per document — batching happens inside.
+    embeddings as a fp16 .npy array. One-shot per document — batching inside.
 
-    Preserves positional alignment with the input chunks: embeddings[i] belongs
-    to chunks[i]. The index activity assumes this and validates length parity.
+    Positional alignment: embeddings[i] belongs to chunks[i]. The index
+    activity assumes this and validates row-count parity.
+
+    Format: numpy .npy, dtype float16, shape (N, dim). ~4-8× smaller than the
+    JSON list-of-lists that preceded it (JSON floats are ~15 chars each);
+    parse is ~10× faster on the read side. fp16 cosine drift on bge-m3 is
+    empirically negligible (well under kNN retrieval noise), and OpenSearch
+    upcasts to fp32 on ingest anyway.
     """
     activity.heartbeat()
 
@@ -180,10 +188,18 @@ async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
 
     ended_at = time.time()
 
+    # np.save writes the standard .npy header + raw dtype bytes; np.load on the
+    # read side reconstructs shape + dtype without a separate schema. Empty
+    # embedding lists produce a (0, dim) array — round-trip stays clean.
+    arr = np.asarray(embeddings, dtype=np.float16)
+    if arr.size == 0:
+        arr = arr.reshape((0, dim))
+    buf = io.BytesIO()
+    np.save(buf, arr, allow_pickle=False)
     put_bytes(
         input.embeddings_uri_out,
-        json.dumps(embeddings).encode("utf-8"),
-        "application/json",
+        buf.getvalue(),
+        "application/octet-stream",
     )
 
     return EmbedChunksOutput(

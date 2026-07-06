@@ -14,12 +14,14 @@ through `shared.s3_io`. Only the URI flows through Temporal history, so the
 """
 
 import asyncio
+import io
 import json
 import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
@@ -482,18 +484,33 @@ async def index_chunks_activity(input: IndexChunksInput) -> IndexChunksOutput:
         )
 
         chunks_raw = json.loads(get_bytes(input.chunks_uri).decode("utf-8"))
-        emb_raw = json.loads(get_bytes(input.embeddings_uri).decode("utf-8"))
-        # embeddings are [[float, ...], ...] positionally aligned with chunks.
-        if len(chunks_raw) != len(emb_raw):
+        # embeddings.npy: fp16 array, shape (N, dim), positionally aligned with
+        # chunks. np.load reconstructs shape + dtype from the .npy header;
+        # allow_pickle=False keeps this to plain arrays only. Upcast to fp32
+        # for OpenSearch — the knn_vector field stores float32 regardless.
+        emb_arr = np.load(io.BytesIO(get_bytes(input.embeddings_uri)), allow_pickle=False)
+        if emb_arr.ndim != 2:
             raise RuntimeError(
-                f"chunks/embeddings length mismatch: {len(chunks_raw)} vs {len(emb_raw)}"
+                f"embeddings array must be 2-D (N, dim); got shape {emb_arr.shape}"
+            )
+        if len(chunks_raw) != emb_arr.shape[0]:
+            raise RuntimeError(
+                f"chunks/embeddings length mismatch: {len(chunks_raw)} vs {emb_arr.shape[0]}"
+            )
+        emb_arr = emb_arr.astype(np.float32, copy=False)
+
+        dim = int(input.config["embedding_server"]["dimension"])
+        if emb_arr.shape[1] != dim:
+            raise RuntimeError(
+                f"embedding_server.dimension={dim} but stored vectors are "
+                f"{emb_arr.shape[1]}-dim; index_name rotation required"
             )
 
         chunks = [
-            Chunk.model_validate({**c, "embedding": e}) for c, e in zip(chunks_raw, emb_raw)
+            Chunk.model_validate({**c, "embedding": emb_arr[i].tolist()})
+            for i, c in enumerate(chunks_raw)
         ]
 
-        dim = int(input.config["embedding_server"]["dimension"])
         client = build_client(input.config)
         ensure_index(client, input.index_name, embedding_dim=dim)
         wipe_paper(client, input.index_name, input.paper_id)

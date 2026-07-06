@@ -74,9 +74,13 @@ def _resolve_index_name(input: IndexDocumentWorkflowInput) -> str:
 def _embeddings_uri(config: dict, document_id: str) -> str:
     """One canonical embeddings URI per paper — mirrors _index_artifact_uri in
     pipeline.cpu_activities. Re-runs overwrite in place; wipe_paper in
-    index_chunks_activity clears the OpenSearch side."""
+    index_chunks_activity clears the OpenSearch side.
+
+    .npy = fp16 numpy array, shape (N, dim), positionally aligned with
+    chunks.json. ~4-8× smaller than the JSON list-of-lists that preceded it.
+    """
     prefix = config["output"]["assets_uri_prefix"].rstrip("/")
-    return f"{prefix}/{document_id}/index/embeddings.json"
+    return f"{prefix}/{document_id}/index/embeddings.npy"
 
 
 @workflow.defn
