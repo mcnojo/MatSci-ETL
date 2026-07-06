@@ -59,11 +59,15 @@ with workflow.unsafe.imports_passed_through():
         GPU_RETRY_POLICY,
         LIVE_CPU_TQ,
         LIVE_GPU_TQ,
+        WORKFLOW_EXECUTION_TIMEOUT,
     )
     from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
     from shared.schemas import TreeNode, VisualElement
 
+    from .index_document import IndexDocumentWorkflow
     from .models import (
+        IndexDocumentWorkflowInput,
+        IndexDocumentWorkflowOutput,
         ProcessPdfWorkflowInput,
         ProcessPdfWorkflowOutput,
     )
@@ -484,6 +488,16 @@ class ProcessPdfWorkflow:
             retry_policy=DEFAULT_RETRY_POLICY,
         )
         finalize_summary(summary)
+
+        # Optional tail: chunk + embed + BM25/kNN index into OpenSearch. Toggle
+        # via config.retrieval.index_enabled; runs as a child so its history is
+        # decoupled and Temporal-UI can inspect it independently. Failure of
+        # the child fails the parent — a re-run picks up from the finalized
+        # tree via `pipeline.cli index <tree_uri>` if needed.
+        index_summary = await self._maybe_index(
+            input=input, config=config, tree_path=final_out.tree_path, cpu_q=cpu_q,
+        )
+
         return ProcessPdfWorkflowOutput(
             document_id=input.document_id,
             run_id=input.run_id,
@@ -491,7 +505,38 @@ class ProcessPdfWorkflow:
             node_count=node_count,
             total_pages=total_pages,
             metrics_summary=summary,
+            index_summary=index_summary,
         )
+
+    async def _maybe_index(
+        self,
+        *,
+        input: ProcessPdfWorkflowInput,
+        config: dict,
+        tree_path: str,
+        cpu_q: str,
+    ) -> dict | None:
+        if not config.get("retrieval", {}).get("index_enabled", False):
+            return None
+        index_out: IndexDocumentWorkflowOutput = await workflow.execute_child_workflow(
+            IndexDocumentWorkflow.run,
+            IndexDocumentWorkflowInput(
+                document_id=input.document_id,
+                run_id=input.run_id,
+                tree_uri=tree_path,
+                config=config,
+            ),
+            id=f"index-{input.document_id}-{input.run_id}",
+            task_queue=cpu_q,
+            execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
+        )
+        return {
+            "index_name": index_out.index_name,
+            "chunk_count": index_out.chunk_count,
+            "embedded_count": index_out.embedded_count,
+            "indexed_count": index_out.indexed_count,
+            "total_tokens": index_out.total_tokens,
+        }
 
     @staticmethod
     def _tree_path(input: ProcessPdfWorkflowInput, config: dict) -> str:

@@ -98,6 +98,9 @@ class BatchRunOutput(BaseModel):
     success_count: int
     failure_count: int
     report_uris: dict[str, str]      # summary_uri, per_item_uri, failures_uri
+    # Populated when retrieval.index_enabled and the auto-index tail ran.
+    # None means indexing was skipped (toggle off) or no items succeeded OCR.
+    index_summary: Optional[dict] = None
 
 
 # Indexing route (parallel motif). Distinct workflows so per-item child typing

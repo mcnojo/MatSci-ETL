@@ -89,12 +89,22 @@ embedding_server:
   dimension: 1024
   batch_size: 64
 
-# Retrieval — BM25 + dense hybrid index (OpenSearch).
+# Indexing — BM25 + dense chunk store (OpenSearch write-side).
+# This repo owns the WRITE path only; retrieval belongs to the downstream
+# agent (see docs/vector-and-bm25-access.md).
+#
+# `index_enabled` toggles whether OCR runs automatically chain into
+# chunk+embed+index. Live: gates the tail of ProcessPdfWorkflow. Batch: gates
+# the tail of BatchRunWorkflow. Set false to run OCR alone and re-index later
+# via `python -m prod.batch.cli submit-index` (batch) or `python -m pipeline.cli
+# index <tree_uri>` (live).
+#
 # `auth: basic` reads user/password from the env vars named below. Switch to
 # `auth: aws_sigv4` (and add `region`) for Amazon OpenSearch Service.
 # Rotate index_name when swapping embedding_server.model — dimension is baked
 # into the mapping and can't be mutated in place.
 retrieval:
+  index_enabled: true
   opensearch:
     endpoint: "https://opensearch.internal:9200"
     auth: "basic"

@@ -42,7 +42,11 @@ from temporalio.exceptions import (
 )
 
 with workflow.unsafe.imports_passed_through():
-    from prod.batch.planner import shard_manifest, shard_workflow_id
+    from prod.batch.planner import (
+        index_shard_workflow_id,
+        shard_manifest,
+        shard_workflow_id,
+    )
     from prod.batch.workflows.activities.await_pollers import (
         AwaitPollersInput,
         await_pollers_activity,
@@ -79,11 +83,16 @@ with workflow.unsafe.imports_passed_through():
     from .models import (
         BatchRunInput,
         BatchRunOutput,
+        IndexBatchItem,
+        IndexItemResult,
         ItemResult,
+        ShardIndexInput,
+        ShardIndexOutput,
         ShardInput,
         ShardOutput,
     )
     from .shard import ShardWorkflow
+    from .shard_index import ShardIndexWorkflow
 
 
 # Lifecycle activities own their own retry posture. Scale-up bounds short; the
@@ -193,6 +202,17 @@ class BatchRunWorkflow:
             success_count = sum(1 for r in all_items if r.status == "success")
             failure_count = len(all_items) - success_count
 
+            # Stage 5a (optional): auto-index the successful items. Toggle via
+            # config.retrieval.index_enabled. Fans out ShardIndexWorkflow the
+            # same way as the OCR shards. Failure of an item is recorded but
+            # doesn't fail the batch — trees are already durable in S3, and
+            # a re-run via `submit-index` picks up the misses.
+            index_summary = await self._maybe_index(
+                input.batch_id, all_items, merged_config,
+                input.shards_in_flight, input.pdfs_per_shard_in_flight,
+                input.shard_size,
+            )
+
             summary = {
                 "batch_id": input.batch_id,
                 "total_items": len(all_items),
@@ -207,6 +227,8 @@ class BatchRunWorkflow:
                     for s in shard_results if s is not None
                 ],
             }
+            if index_summary is not None:
+                summary["index"] = index_summary
             per_item = [_per_item_row(r) for r in all_items]
             failures = [_failure_row(r) for r in all_items if r.status == "failure"]
 
@@ -255,6 +277,7 @@ class BatchRunWorkflow:
                 success_count=success_count,
                 failure_count=failure_count,
                 report_uris=write_out.report_uris,
+                index_summary=index_summary,
             )
         except asyncio.CancelledError:
             cancelled = True
@@ -301,6 +324,116 @@ class BatchRunWorkflow:
             raise main_exc
         assert result is not None
         return result
+
+    async def _maybe_index(
+        self,
+        batch_id: str,
+        all_items: list[ItemResult],
+        merged_config: dict,
+        shards_in_flight: int,
+        docs_per_shard_in_flight: int,
+        shard_size: int,
+    ) -> dict | None:
+        """Toggle-gated auto-index tail. Chunks + embeds + BM25/kNN-indexes
+        every OCR-successful item by fanning out ShardIndexWorkflow children.
+        Returns a summary dict for the batch report, or None when disabled.
+        """
+        if not merged_config.get("retrieval", {}).get("index_enabled", False):
+            return None
+        index_items = [
+            IndexBatchItem(document_id=r.document_id, tree_uri=r.tree_path)
+            for r in all_items
+            if r.status == "success" and r.tree_path
+        ]
+        if not index_items:
+            return {
+                "total_items": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "shards": [],
+            }
+        shards = [
+            index_items[i : i + shard_size]
+            for i in range(0, len(index_items), shard_size)
+        ]
+        shard_outs = await self._fan_out_index_shards(
+            batch_id, shards, merged_config, shards_in_flight, docs_per_shard_in_flight,
+        )
+        flat: list[IndexItemResult] = []
+        for so in shard_outs:
+            if so is not None:
+                flat.extend(so.items)
+        success = sum(1 for r in flat if r.status == "success")
+        return {
+            "total_items": len(flat),
+            "success_count": success,
+            "failure_count": len(flat) - success,
+            "shards": [
+                {
+                    "shard_index": s.shard_index,
+                    "success": sum(1 for r in s.items if r.status == "success"),
+                    "failure": sum(1 for r in s.items if r.status == "failure"),
+                }
+                for s in shard_outs if s is not None
+            ],
+        }
+
+    async def _fan_out_index_shards(
+        self, batch_id: str, shards: list, merged_config: dict,
+        shards_in_flight: int, docs_per_shard_in_flight: int,
+    ) -> list[ShardIndexOutput | None]:
+        sem = asyncio.Semaphore(shards_in_flight)
+        results: list[ShardIndexOutput | None] = [None] * len(shards)
+
+        async def run_shard(shard_idx: int) -> None:
+            child_id = index_shard_workflow_id(batch_id, shard_idx)
+            async with sem:
+                try:
+                    out: ShardIndexOutput = await workflow.execute_child_workflow(
+                        ShardIndexWorkflow.run,
+                        ShardIndexInput(
+                            batch_id=batch_id,
+                            shard_index=shard_idx,
+                            items=shards[shard_idx],
+                            pipeline_config=merged_config,
+                            max_in_flight=docs_per_shard_in_flight,
+                        ),
+                        id=child_id,
+                        task_queue=BATCH_CPU_TQ,
+                        execution_timeout=SHARD_WORKFLOW_EXECUTION_TIMEOUT,
+                        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+                    )
+                    results[shard_idx] = out
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Same failure posture as ShardWorkflow — trees are durable,
+                    # so a shard failure is not a batch-level failure. Record
+                    # each item as failed with the shard-level error for the
+                    # report; a re-run via `submit-index` picks up the misses.
+                    workflow.logger.error(
+                        "ShardIndexWorkflow %s failed: %s: %s",
+                        child_id, type(exc).__name__, exc,
+                    )
+                    err = _truncate(f"shard-level failure: {type(exc).__name__}: {exc}", 1500)
+                    results[shard_idx] = ShardIndexOutput(
+                        shard_index=shard_idx,
+                        items=[
+                            IndexItemResult(
+                                document_id=item.document_id,
+                                tree_uri=item.tree_uri,
+                                status="failure",
+                                workflow_id=child_id,
+                                error=err,
+                            )
+                            for item in shards[shard_idx]
+                        ],
+                    )
+
+        async with asyncio.TaskGroup() as tg:
+            for i in range(len(shards)):
+                tg.create_task(run_shard(i))
+        return results
 
     async def _fan_out_shards(
         self, batch_id: str, shards: list, merged_config: dict,

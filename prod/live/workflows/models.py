@@ -23,6 +23,9 @@ class ProcessPdfWorkflowOutput(BaseModel):
     node_count: int
     total_pages: int
     metrics_summary: dict       # aggregated per-call timings and token usage
+    # Populated when retrieval.index_enabled and the tail IndexDocumentWorkflow
+    # child succeeded. None means indexing was skipped (toggle off).
+    index_summary: dict | None = None
 
 
 class IndexDocumentWorkflowInput(BaseModel):

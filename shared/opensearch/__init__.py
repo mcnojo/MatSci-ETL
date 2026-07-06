@@ -1,12 +1,20 @@
-"""OpenSearch client + hybrid-search wrapper for chunk retrieval.
+"""OpenSearch client + index-write path for the chunk store.
 
-Backend for the BM25 / hybrid-RAG comparison route. Client is opensearch-py
-(drop-in with elasticsearch-py); the same code targets self-hosted OpenSearch
-on EC2 or Amazon OpenSearch Service. Managed OS uses SigV4 auth via
-requests-aws4auth; self-hosted uses basic auth.
+Write-side only: this repo owns chunking, embedding, and bulk-loading the
+BM25 + kNN index. Retrieval (BM25 / RRF / rerank) lives in the downstream
+agent — see docs/vector-and-bm25-access.md.
 """
 
 from .client import build_client, resolve_endpoint
-from .mapping import CHUNK_INDEX_MAPPING, ensure_index
-from .query import HitResult, hybrid_search, rrf_merge
+from .mapping import CHUNK_INDEX_MAPPING, chunk_index_mapping, ensure_index
 from .writer import bulk_index_chunks, wipe_paper
+
+__all__ = [
+    "build_client",
+    "resolve_endpoint",
+    "CHUNK_INDEX_MAPPING",
+    "chunk_index_mapping",
+    "ensure_index",
+    "bulk_index_chunks",
+    "wipe_paper",
+]
