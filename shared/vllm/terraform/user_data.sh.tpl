@@ -12,7 +12,7 @@ SERVE_USER=ubuntu
 
 echo "[bootstrap] pip install"
 sudo -u "$SERVE_USER" -H bash -lc 'pip install --upgrade pip'
-sudo -u "$SERVE_USER" -H bash -lc 'pip install vllm openai'
+sudo -u "$SERVE_USER" -H bash -lc 'pip install "vllm>=0.24,<0.25" openai'
 
 echo "[bootstrap] log file"
 install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"

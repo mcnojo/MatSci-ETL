@@ -61,7 +61,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # vLLM server. Installed only on the vLLM host.
-serve = ["vllm>=0.11.0"]
+serve = ["vllm>=0.24,<0.25"]
 
 # Heavy CV/ML stack pulled by load_pages/extract_assets/assign_elements/finalize
 # (the CPU lane activities) and any worker that registers a workflow which
