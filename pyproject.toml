@@ -81,4 +81,4 @@ pipeline-cpu = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["shared*", "pipeline*", "prod*", "vllm*", "preprocessing*"]
-exclude = ["env*", "frontend*", "docs*", "data*", "test_hard*"]
+exclude = ["env*", "docs*", "data*", "test_hard*"]
