@@ -24,8 +24,12 @@ dependencies = [
     "tabula-py>=2.9.0",
 
     # ─ LLM clients (vLLM/OpenAI-compatible + cloud providers)
+    # litellm gives one call site across providers; instructor wraps it to return
+    # validated Pydantic models (replacing hand-rolled JSON extract + retry).
     "openai>=2.36.0",
     "anthropic>=0.40.0",
+    "litellm>=1.55.0",
+    "instructor>=1.6.0",
     "tiktoken>=0.7.0",
 
     # ─ Config / schema

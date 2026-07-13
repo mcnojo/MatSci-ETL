@@ -32,6 +32,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from pipeline.gpu_activities import (
         chandra_vision_call_activity,
+        llm_structured_call_activity,
         llm_text_call_activity,
     )
     from pipeline.chandra_parser import parse as parse_chandra
@@ -40,10 +41,10 @@ with workflow.unsafe.imports_passed_through():
         LlmResult,
         build_opt_from_config,
         build_tree,
-        extract_json,
     )
     from shared.temporal.activity_models import (
         ChandraCallInput,
+        LlmStructuredCallInput,
         LlmTextCallInput,
         PageRangeSpec,
         PromptSpec,
@@ -103,6 +104,72 @@ def _format_visual_element(ve: VisualElement) -> str:
     return "\n".join(parts)
 
 
+class _WorkflowCallLlm:
+    """CallLlm bridge — text activity via __call__, structured via .parsed.
+
+    Both variants merge timing + token metrics into `summary` on success. On
+    failure the underlying activity error propagates; the caller records the
+    errored counter (see _extract_abstract for the non-fatal path).
+    """
+
+    def __init__(self, config_uri: str, summary: dict, gpu_q: str):
+        self._config_uri = config_uri
+        self._summary = summary
+        self._gpu_q = gpu_q
+
+    async def __call__(
+        self, model: str, spec: PromptSpec, *,
+        json_mode: bool = False, temperature: float = 0.0,
+    ) -> LlmResult:
+        result = await workflow.execute_activity(
+            llm_text_call_activity,
+            LlmTextCallInput(
+                prompt_spec=spec, config_uri=self._config_uri, model=model,
+                json_mode=json_mode, temperature=temperature,
+            ),
+            task_queue=self._gpu_q,
+            start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
+            retry_policy=GPU_RETRY_POLICY,
+        )
+        merge_call_record(
+            self._summary, result.model,
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+        return LlmResult(
+            model=result.model,
+            content=result.content,
+            finish_reason=result.finish_reason,
+        )
+
+    async def parsed(
+        self, model: str, spec: PromptSpec, response_schema: str,
+        *, temperature: float = 0.0,
+    ) -> dict:
+        result = await workflow.execute_activity(
+            llm_structured_call_activity,
+            LlmStructuredCallInput(
+                prompt_spec=spec, config_uri=self._config_uri, model=model,
+                response_schema=response_schema, temperature=temperature,
+            ),
+            task_queue=self._gpu_q,
+            start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
+            retry_policy=GPU_RETRY_POLICY,
+        )
+        merge_call_record(
+            self._summary, result.model,
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+        return result.data
+
+
 @workflow.defn
 class ProcessPdfWorkflow:
     @workflow.run
@@ -148,7 +215,7 @@ class ProcessPdfWorkflow:
         # Abstract extraction rides alongside tree build under one TaskGroup: it's one small text-LLM
         # call against pages 1-3, so overlapping it with the tree fanout is free wall-clock savings.
         opt = build_opt_from_config(config, pages_uri)
-        call_llm = self._make_call_llm(config_uri, summary, gpu_q)
+        call_llm = _WorkflowCallLlm(config_uri, summary, gpu_q)
         async with asyncio.TaskGroup() as tg:
             tree_task = tg.create_task(build_tree(
                 token_counts, opt,
@@ -158,7 +225,7 @@ class ProcessPdfWorkflow:
                 pdf_path=input.pdf_path,
             ))
             abstract_task = tg.create_task(self._extract_abstract(
-                pages_uri, config_uri, opt, total_pages, summary, gpu_q,
+                pages_uri, opt, total_pages, summary, call_llm,
             ))
         tree = tree_task.result()
         tree.abstract = abstract_task.result()
@@ -229,38 +296,11 @@ class ProcessPdfWorkflow:
 
         return await self._finalize(input, config, tree, summary, node_count, total_pages, cpu_q, pages_uri)
 
-    def _make_call_llm(self, config_uri: str, summary: dict, gpu_q: str):
-        async def call(model, spec: PromptSpec, *, json_mode=False, temperature=0.0) -> LlmResult:
-            result = await workflow.execute_activity(
-                llm_text_call_activity,
-                LlmTextCallInput(
-                    prompt_spec=spec, config_uri=config_uri, model=model,
-                    json_mode=json_mode, temperature=temperature,
-                ),
-                task_queue=gpu_q,
-                start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
-                heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
-                retry_policy=GPU_RETRY_POLICY,
-            )
-            merge_call_record(
-                summary, result.model,
-                started_at=result.started_at,
-                ended_at=result.ended_at,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-            )
-            return LlmResult(
-                model=result.model,
-                content=result.content,
-                finish_reason=result.finish_reason,
-            )
-        return call
-
     async def _extract_abstract(
-        self, pages_uri: str, config_uri: str, opt, total_pages: int,
-        summary: dict, gpu_q: str,
+        self, pages_uri: str, opt, total_pages: int,
+        summary: dict, call_llm: "_WorkflowCallLlm",
     ) -> str | None:
-        """One text-LLM call over pages 1-3 -> verbatim abstract, JSON-mode.
+        """One structured-LLM call over pages 1-3 -> verbatim abstract.
 
         Failure is non-fatal: log, record errored call, return None. The abstract
         is a convenience field, not on the critical path — MUST NOT raise or the
@@ -274,30 +314,12 @@ class ProcessPdfWorkflow:
             pages_uri=pages_uri,
         )
         try:
-            result = await workflow.execute_activity(
-                llm_text_call_activity,
-                LlmTextCallInput(
-                    prompt_spec=spec, config_uri=config_uri, model=opt.model_fast,
-                    json_mode=True,
-                ),
-                task_queue=gpu_q,
-                start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
-                heartbeat_timeout=GPU_HEARTBEAT_TIMEOUT,
-                retry_policy=GPU_RETRY_POLICY,
-            )
+            data = await call_llm.parsed(opt.model_fast, spec, "abstract")
         except Exception as exc:
             workflow.logger.warning("abstract extraction failed: %s", exc)
             merge_call_record(summary, opt.model_fast, errored=True)
             return None
-        merge_call_record(
-            summary, result.model,
-            started_at=result.started_at,
-            ended_at=result.ended_at,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-        )
-        parsed = extract_json(result.content)
-        val = parsed.get("abstract") if isinstance(parsed, dict) else None
+        val = data.get("abstract")
         text = val.strip() if isinstance(val, str) else ""
         return text or None
 

@@ -33,10 +33,23 @@ class LlmResult(BaseModel):
 
 
 class CallLlm(Protocol):
+    """Bridge from workflow → LLM activities.
+
+    `__call__` returns raw text — used by the toc_transformer continuation loop,
+    where multiple partial responses are concatenated before final parse.
+    `parsed` returns a validated Pydantic model dumped to a dict, keyed by
+    response_schemas.RESPONSE_SCHEMAS. instructor owns fence-stripping /
+    ValidationError repair inside the activity; the workflow just reads the dict.
+    """
     async def __call__(
         self, model: str, spec: PromptSpec, *,
         json_mode: bool = False, temperature: float = 0.0,
     ) -> LlmResult: ...
+
+    async def parsed(
+        self, model: str, spec: PromptSpec, response_schema: str,
+        *, temperature: float = 0.0,
+    ) -> dict: ...
 
 
 class BuildOpt(BaseModel):
@@ -109,60 +122,45 @@ def count_tokens(text: str) -> int:
 
 
 def _get_json_content(response: str) -> str:
-    start_idx = response.find("```json")
-    if start_idx != -1:
-        response = response[start_idx + 7:]
-    end_idx = response.rfind("```")
-    if end_idx != -1:
-        response = response[:end_idx]
+    # Strip ```json / ``` fences off the toc_transformer's per-round partial.
+    # instructor already handles this internally; this helper only survives on
+    # the assembly path where we concatenate multiple raw text responses.
+    start = response.find("```json")
+    if start != -1:
+        response = response[start + 7:]
+    end = response.rfind("```")
+    if end != -1:
+        response = response[:end]
     return response.strip()
 
 
-def _strip_thinking(content: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+def _parse_toc_assembly(text: str) -> list[dict]:
+    """Parse the toc_transformer's assembled multi-round JSON.
 
-
-def extract_json(content: str) -> dict | list:
-    if not content or not content.strip():
-        log.error("extract_json: received empty response from LLM")
-        return {}
-
-    content = _strip_thinking(content)
-    if not content.strip():
-        log.error("extract_json: response was only thinking tokens, no content")
-        return {}
-
-    json_content = ""
+    Prompt style + provider drift produce {"toc":[...]}, {"table_of_contents":[...]},
+    {"contents":[...]}, or a bare array. Returns raw dicts — downstream mutates
+    via convert_physical_index_to_int / convert_page_to_int in place.
+    """
+    text = text.strip()
+    if not text:
+        return []
     try:
-        start_idx = content.find("```json")
-        if start_idx != -1:
-            json_content = content[start_idx + 7:content.rfind("```")].strip()
-        else:
-            json_content = content.strip()
-
-        json_content = json_content.replace("None", "null")
-        json_content = json_content.replace("\n", " ").replace("\r", " ")
-        json_content = " ".join(json_content.split())
-        return json.loads(json_content)
-    except json.JSONDecodeError:
-        try:
-            json_content = json_content.replace(",]", "]").replace(",}", "}")
-            return json.loads(json_content)
-        except Exception:
-            pass
-
-        try:
-            match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", content)
-            if match:
-                return json.loads(match.group(1))
-        except Exception:
-            pass
-
-        log.error("extract_json: failed to parse. First 500 chars:\n%s", content[:500])
-        return {}
-    except Exception as e:
-        log.error("extract_json: unexpected error: %s", e)
-        return {}
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        log.error("toc_transformer: JSON parse failed: %s", exc)
+        return []
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for key in ("toc", "table_of_contents", "contents"):
+            val = parsed.get(key)
+            if isinstance(val, list):
+                return val
+        if len(parsed) == 1:
+            val = next(iter(parsed.values()))
+            if isinstance(val, list):
+                return val
+    return []
 
 
 def convert_physical_index_to_int(data):
@@ -439,20 +437,6 @@ def create_clean_structure_for_description(structure):
     return structure
 
 
-def _extract_toc_list(parsed: dict | list) -> list | None:
-    if isinstance(parsed, list):
-        return parsed
-    if isinstance(parsed, dict):
-        for key in ("table_of_contents", "toc", "contents"):
-            if key in parsed and isinstance(parsed[key], list):
-                return parsed[key]
-        if len(parsed) == 1:
-            val = next(iter(parsed.values()))
-            if isinstance(val, list):
-                return val
-    return None
-
-
 def _node_page_indices(node: dict) -> list[int]:
     return list(range(node["start_index"] - 1, node["end_index"]))
 
@@ -473,8 +457,8 @@ async def toc_detector_single_page(
 ) -> str:
     spec = _spec("toc_detector_single_page", opt,
                  page={"content": _page([page_idx])})
-    result = await call_llm(opt.model_fast, spec, json_mode=True)
-    return extract_json(result.content).get("toc_detected", "no")
+    data = await call_llm.parsed(opt.model_fast, spec, "toc_detection")
+    return data.get("toc_detected", "no")
 
 
 async def find_toc_pages(
@@ -503,8 +487,8 @@ async def detect_page_index(
 ) -> str:
     spec = _spec("detect_page_index", opt,
                  page={"toc_content": _page(toc_page_indices, transform_dots=True)})
-    result = await call_llm(opt.model_fast, spec, json_mode=True)
-    return extract_json(result.content).get("page_index_given_in_toc", "no")
+    data = await call_llm.parsed(opt.model_fast, spec, "page_index_present")
+    return data.get("page_index_given_in_toc", "no")
 
 
 async def toc_extractor(
@@ -524,8 +508,8 @@ async def check_if_toc_transformation_is_complete(
         small={"toc": last_complete},
         page={"content": _page(toc_page_indices, transform_dots=True)},
     )
-    result = await call_llm(opt.model_fast, spec, json_mode=True)
-    return extract_json(result.content).get("completed", "no")
+    data = await call_llm.parsed(opt.model_fast, spec, "toc_completion")
+    return data.get("completed", "no")
 
 
 async def toc_transformer(
@@ -541,9 +525,8 @@ async def toc_transformer(
         toc_page_indices, last_complete, opt=opt, call_llm=call_llm,
     )
     if if_complete == "yes" and finished:
-        parsed = extract_json(last_complete)
-        toc_list = _extract_toc_list(parsed)
-        if toc_list is not None:
+        toc_list = _parse_toc_assembly(last_complete)
+        if toc_list:
             return convert_page_to_int(toc_list)
 
     last_complete = _get_json_content(last_complete)
@@ -571,9 +554,8 @@ async def toc_transformer(
         if if_complete == "yes" and finished:
             break
 
-    parsed = extract_json(last_complete)
-    toc_list = _extract_toc_list(parsed)
-    if toc_list is None:
+    toc_list = _parse_toc_assembly(last_complete)
+    if not toc_list:
         log.error("toc_transformer: could not extract TOC list from LLM response")
         return []
     return convert_page_to_int(toc_list)
@@ -587,8 +569,8 @@ async def toc_index_extractor(
         small={"toc": toc},
         page={"content": _page(content_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, spec, json_mode=True)
-    return extract_json(result.content)
+    data = await call_llm.parsed(opt.model, spec, "toc_list")
+    return data.get("toc", [])
 
 
 async def add_page_number_to_toc(
@@ -599,12 +581,11 @@ async def add_page_number_to_toc(
         small={"structure": structure},
         page={"part": _page(part_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, spec, json_mode=True)
-    parsed = extract_json(result.content)
-
-    for item in parsed:
+    data = await call_llm.parsed(opt.model, spec, "toc_list")
+    items = data.get("toc", [])
+    for item in items:
         item.pop("start", None)
-    return parsed
+    return items
 
 
 async def generate_toc_init(
@@ -621,10 +602,9 @@ async def generate_toc_init(
             "generate_toc_init", opt,
             page={"part": _page(part_indices, wrap="physical_index")},
         )
-    result = await call_llm(opt.model, spec, json_mode=True)
-    if result.finish_reason != "length":
-        return extract_json(result.content)
-    raise RuntimeError(f"generate_toc_init: finish_reason={result.finish_reason}")
+    # instructor validates+repairs truncation; the previous finish_reason=="length"
+    # gate is subsumed — a genuinely un-repairable response propagates as an exception.
+    return await call_llm.parsed(opt.model, spec, "toc_list")
 
 
 async def generate_toc_continue(
@@ -635,10 +615,7 @@ async def generate_toc_continue(
         small={"toc_content": toc_content},
         page={"part": _page(part_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, spec, json_mode=True)
-    if result.finish_reason != "length":
-        return extract_json(result.content)
-    raise RuntimeError(f"generate_toc_continue: finish_reason={result.finish_reason}")
+    return await call_llm.parsed(opt.model, spec, "toc_list")
 
 
 async def process_no_toc(
@@ -866,9 +843,8 @@ async def check_title_appearance(
         small={"title": title},
         page={"page_text": _page([page_number - 1])},
     )
-    result = await call_llm(opt.model_fast, spec, json_mode=True)
-    parsed = extract_json(result.content)
-    answer = parsed.get("answer", "no")
+    data = await call_llm.parsed(opt.model_fast, spec, "title_appearance")
+    answer = data.get("answer", "no")
     return {"list_index": item.get("list_index"), "answer": answer,
             "title": title, "page_number": page_number}
 
@@ -881,8 +857,8 @@ async def check_title_appearance_in_start(
         small={"title": title},
         page={"page_text": _page([page_idx])},
     )
-    result = await call_llm(opt.model_fast, spec, json_mode=True)
-    return extract_json(result.content).get("start_begin", "no")
+    data = await call_llm.parsed(opt.model_fast, spec, "title_starts_section")
+    return data.get("start_begin", "no")
 
 
 async def check_title_appearance_in_start_concurrent(
@@ -963,9 +939,8 @@ async def single_toc_item_index_fixer(
         small={"section_title": section_title},
         page={"content": _page(content_indices, wrap="physical_index")},
     )
-    result = await call_llm(opt.model, spec, json_mode=True)
-    parsed = extract_json(result.content)
-    return convert_physical_index_to_int(parsed.get("physical_index", ""))
+    data = await call_llm.parsed(opt.model, spec, "physical_index_fix")
+    return convert_physical_index_to_int(data.get("physical_index", ""))
 
 
 async def fix_incorrect_toc(
@@ -1263,14 +1238,13 @@ async def verify_summaries_for_structure(
             )},
         )
         try:
-            result = await call_llm(opt.model_fast, verify_spec, json_mode=True)
-            parsed = extract_json(result.content)
+            data = await call_llm.parsed(opt.model_fast, verify_spec, "summary_verdict")
         except Exception as exc:
             log.warning(f"verify_node_summary failed for '{node.get('title')}': {exc}")
             return
 
-        faithful = parsed.get("faithful", "no")
-        missed = parsed.get("missed_topics") or []
+        faithful = data.get("faithful", "no")
+        missed = data.get("missed_topics") or []
         if faithful == "yes" and not missed:
             return
         if not missed:

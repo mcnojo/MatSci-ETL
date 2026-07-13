@@ -48,6 +48,33 @@ class LlmTextCallOutput(BaseModel):
     output_tokens: int
 
 
+class LlmStructuredCallInput(BaseModel):
+    """Same shape as LlmTextCallInput minus json_mode; response_schema is a
+    registry key (see pipeline/response_schemas.py) so the workflow doesn't
+    have to serialize a Pydantic class across the activity boundary.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    prompt_spec: PromptSpec
+    config_uri: str
+    model: str
+    response_schema: str
+    temperature: float = 0.0
+
+
+class LlmStructuredCallOutput(BaseModel):
+    """`data` is the parsed Pydantic model dumped to a dict — the workflow reads
+    it by key rather than importing the schema class."""
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    data: dict[str, Any]
+    started_at: float
+    ended_at: float
+    input_tokens: int
+    output_tokens: int
+
+
 class ChandraCallInput(BaseModel):
     model_config = ConfigDict(frozen=True)
 

@@ -21,6 +21,8 @@ from shared.temporal.activity_models import (
     ChandraCallOutput,
     EmbedChunksInput,
     EmbedChunksOutput,
+    LlmStructuredCallInput,
+    LlmStructuredCallOutput,
     LlmTextCallInput,
     LlmTextCallOutput,
     PromptSpec,
@@ -28,8 +30,9 @@ from shared.temporal.activity_models import (
 from shared.vllm.resolve import resolve_vllm_url
 
 from .heartbeat import await_with_heartbeats
-from .llm_calls import execute_text_call
+from .llm_calls import execute_structured_call, execute_text_call
 from .page_assembly import assemble_page_text
+from .response_schemas import resolve_schema
 
 
 # Bounded LRU — workers are long-lived and accumulate runs.
@@ -99,6 +102,34 @@ async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
         model=result["model"],
         content=result["content"],
         finish_reason=result["finish_reason"],
+        started_at=result["started_at"],
+        ended_at=result["ended_at"],
+        input_tokens=result["input_tokens"],
+        output_tokens=result["output_tokens"],
+    )
+
+
+@activity.defn(name="process-pdf_llm-structured-call")
+async def llm_structured_call_activity(
+    input: LlmStructuredCallInput,
+) -> LlmStructuredCallOutput:
+    """instructor-backed variant of llm_text_call: returns a validated Pydantic
+    model as a dict instead of raw content. The workflow selects the schema by
+    registry key, so class objects don't cross the activity boundary.
+    """
+    activity.heartbeat()
+    config = _cache_get_or_load(_config_cache, input.config_uri, _load_config)
+    prompt = _render_prompt(input.prompt_spec)
+    schema_cls = resolve_schema(input.response_schema)
+    result = await await_with_heartbeats(
+        execute_structured_call(
+            config, input.model, prompt, schema_cls,
+            temperature=input.temperature,
+        ),
+    )
+    return LlmStructuredCallOutput(
+        model=result["model"],
+        data=result["data"],
         started_at=result["started_at"],
         ended_at=result["ended_at"],
         input_tokens=result["input_tokens"],
@@ -213,6 +244,7 @@ async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
 
 GPU_ACTIVITIES = [
     llm_text_call_activity,
+    llm_structured_call_activity,
     chandra_vision_call_activity,
     embed_chunks_activity,
 ]

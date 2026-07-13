@@ -6,58 +6,50 @@ import random
 import tempfile
 from pathlib import Path
 
-from pipeline.page_assembly import assemble_page_text
 from pipeline.tree_logic import BuildOpt, LlmResult, build_tree, collapse_over_decomposed_leaves
-from shared.prompts.etl import get_prompt
 from shared.schemas import DocumentTree
 from shared.temporal.activity_models import PromptSpec
 
 
-def _render(spec: PromptSpec, pages: list[tuple[str, int]]) -> str:
-    # Mirrors gpu_activities._render_prompt so the fake sees the prod-path string.
-    kwargs = dict(spec.small_kwargs)
-    for name, page_spec in spec.page_kwargs.items():
-        kwargs[name] = assemble_page_text(pages, page_spec)
-    return get_prompt(spec.name, spec.style, **kwargs)
+class _FakeCallLlm:
+    """Fake CallLlm matching the class-shape protocol (__call__ + parsed).
 
+    Text calls (`__call__`) return prose for summary-generation paths.
+    Structured calls (`parsed`) dispatch on `response_schema` key — dicts here
+    mirror what the production `llm_structured_call_activity` would emit after
+    instructor validation.
+    """
 
-def _make_fake_call_llm(pages: list[tuple[str, int]]):
-    async def call(model, spec: PromptSpec, *, json_mode=False, temperature=0.0):
-        p = _render(spec, pages)
+    async def __call__(self, model, spec: PromptSpec, *, json_mode=False, temperature=0.0):
+        return LlmResult(model=model, content="A concise summary.", finish_reason="stop")
 
-        if "toc_detected" in p:
-            return LlmResult(model=model, content='{"toc_detected": "no"}', finish_reason="stop")
-
-        if "page_index_given_in_toc" in p:
-            return LlmResult(
-                model=model, content='{"page_index_given_in_toc": "no"}', finish_reason="stop",
-            )
-
-        if "main points covered" in p:
-            return LlmResult(model=model, content="A concise summary.", finish_reason="stop")
-
-        if "appear or start" in p or "appears or starts" in p:
-            return LlmResult(model=model, content='{"answer": "yes"}', finish_reason="stop")
-
-        if "very first content" in p or "starts in the beginning" in p:
-            return LlmResult(model=model, content='{"start_begin": "no"}', finish_reason="stop")
-
-        if "hierarchical tree structure" in p:
-            return LlmResult(
-                model=model,
-                content=(
-                    '{"toc": ['
-                    '{"structure": "1", "title": "Section 1", '
-                    '"physical_index": "<physical_index_1>"},'
-                    '{"structure": "2", "title": "Section 2", '
-                    '"physical_index": "<physical_index_3>"}'
-                    ']}'
-                ),
-                finish_reason="stop",
-            )
-
-        return LlmResult(model=model, content="{}", finish_reason="stop")
-    return call
+    async def parsed(self, model, spec: PromptSpec, response_schema: str, *, temperature=0.0):
+        if response_schema == "toc_detection":
+            return {"toc_detected": "no"}
+        if response_schema == "page_index_present":
+            return {"page_index_given_in_toc": "no"}
+        if response_schema == "toc_completion":
+            return {"completed": "yes"}
+        if response_schema == "toc_list":
+            return {
+                "toc": [
+                    {"structure": "1", "title": "Section 1",
+                     "physical_index": "<physical_index_1>"},
+                    {"structure": "2", "title": "Section 2",
+                     "physical_index": "<physical_index_3>"},
+                ],
+            }
+        if response_schema == "title_appearance":
+            return {"answer": "yes"}
+        if response_schema == "title_starts_section":
+            return {"start_begin": "no"}
+        if response_schema == "physical_index_fix":
+            return {"physical_index": None}
+        if response_schema == "summary_verdict":
+            return {"faithful": "yes", "missed_topics": []}
+        if response_schema == "abstract":
+            return {"abstract": None}
+        return {}
 
 
 async def _build():
@@ -90,7 +82,7 @@ async def _build():
 
         return await build_tree(
             token_counts, opt,
-            call_llm=_make_fake_call_llm(pages),
+            call_llm=_FakeCallLlm(),
             rng=random.Random(0),
             paper_id="fake-doc",
             pdf_path="/tmp/fake.pdf",
