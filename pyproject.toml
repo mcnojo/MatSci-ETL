@@ -32,6 +32,10 @@ dependencies = [
     "instructor>=1.6.0",
     "tiktoken>=0.7.0",
 
+    # ─ Chunker: Rust-core paragraph→sentence→word cascade with tiktoken-aware
+    # token budgeting + overlap. Replaces the prior in-tree splitter.
+    "semantic-text-splitter>=0.32.0",
+
     # ─ Config / schema
     "pydantic>=2.5.0",
     "pyyaml>=6.0",

@@ -1,9 +1,11 @@
-"""Unit tests for pipeline.chunker."""
+"""Unit tests for pipeline.chunker.
+
+Splitting mechanics live in semantic-text-splitter and are tested upstream;
+this file covers only the tree-walking / emission / metadata contract.
+"""
 
 from pipeline.chunker import (
-    _split_text,
     _strip_tags,
-    _tail_within_budget,
     _walk_leaves,
     chunk_document,
 )
@@ -49,43 +51,6 @@ def test_walk_leaves_nested():
     ]
     out = [(n.node_id, bc) for n, bc in _walk_leaves(nodes)]
     assert out == [("g", ["Root", "Kid", "Grand"]), ("l2", ["Root", "Leaf2"])]
-
-
-# _tail_within_budget — whole-sentence trailing overlap
-
-def test_tail_within_budget_zero_returns_empty():
-    assert _tail_within_budget("Hello there. Sentence two.", 0) == ""
-
-
-def test_tail_within_budget_picks_whole_sentences():
-    text = "One. Two. Three. Four."
-    tail = _tail_within_budget(text, 6)
-    # Should end at a sentence boundary (never mid-word), never exceed budget.
-    assert tail.endswith(".") or tail == ""
-    for s in ("One", "Two", "Three", "Four"):
-        assert tail.count(s) <= 1
-
-
-# _split_text — packing logic
-
-def test_split_short_text_returns_one_part():
-    text = "One two three four. Five six seven."
-    parts = _split_text(text, max_tokens=100, overlap_tokens=8)
-    assert parts == [text.strip()]
-
-
-def test_split_long_text_produces_multiple_parts_with_overlap():
-    body = "Sentence one. Sentence two. Sentence three."
-    text = "\n\n".join([body] * 20)  # ~200 tokens on cl100k
-    parts = _split_text(text, max_tokens=32, overlap_tokens=8)
-    assert len(parts) >= 3
-    # Overlap: every part after the first should share prefix content with the
-    # tail of the previous one (whole sentences carried forward).
-    for i in range(1, len(parts)):
-        # At least the last sentence of parts[i-1] appears at the head of parts[i]
-        prev_tail = parts[i - 1].split(".")[-2].strip()  # last non-empty sentence
-        if prev_tail:
-            assert prev_tail in parts[i][: len(prev_tail) + 100]
 
 
 # _strip_tags — defensive belt-and-suspenders against HTML in chunker-visible fields
