@@ -68,7 +68,5 @@ def assemble_page_text(pages: list[tuple[str, int]], spec: PageRangeSpec) -> str
         )
         return _extract_section_block(wrapped) if spec.extract_section_only else wrapped
 
-    if spec.extract_section_only:
-        raise ValueError("PageRangeSpec.extract_section_only requires overlap_pre/overlap_post")
-
+    # No overlaps → nothing to strip; core IS the section.
     return core
