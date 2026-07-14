@@ -135,7 +135,17 @@ async def execute_structured_call(
     litellm_model, kwargs = _completion_kwargs(config, model)
     kwargs["temperature"] = temperature
 
-    client = instructor.from_litellm(litellm.acompletion)
+    # Mode picks the wire format instructor emits for schema-constrained output.
+    # vLLM's OpenAI-compat frontend has no `--tool-call-parser` wired by default
+    # (and gemma-3n isn't tool-call-trained), so TOOLS mode gets rejected server
+    # -side; JSON_SCHEMA rides vLLM's built-in guided-decoding backend and works
+    # with no server config. Anthropic uses its native tool-use protocol.
+    provider = (config["tree_llm"].get("provider") or "openai").lower()
+    mode = (
+        instructor.Mode.JSON_SCHEMA if provider == "openai"
+        else instructor.Mode.ANTHROPIC_TOOLS
+    )
+    client = instructor.from_litellm(litellm.acompletion, mode=mode)
     started_at = time.time()
     parsed, raw = await client.chat.completions.create_with_completion(
         model=litellm_model,
