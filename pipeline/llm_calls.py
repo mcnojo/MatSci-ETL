@@ -23,7 +23,7 @@ log = logging.getLogger("llm_calls")
 # instructor's validation-repair budget. One repair round handles the common
 # "Yes/No case mismatch" / "unwrapped array" retries; more than that usually
 # means the schema is wrong, not the model.
-_INSTRUCTOR_MAX_RETRIES = 2
+_INSTRUCTOR_MAX_RETRIES = 3
 
 
 def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
@@ -45,7 +45,13 @@ def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
     max_tokens = int(cfg.get("max_response_tokens", 8192))
 
     litellm_model = f"{provider}/{model}"
-    kwargs: dict[str, Any] = {"max_tokens": max_tokens}
+    # `_skip_mcp_handler`: litellm.main.completion:4866 gates on `if not
+    # skip_mcp_handler and tools:` before importing litellm.responses.mcp, which
+    # transitively pulls litellm.proxy (fastapi, orjson, redis…). Instructor's
+    # default TOOLS mode always sets `tools=[...]`, so every structured call
+    # trips that chain unless we opt out here. We never route to an MCP gateway,
+    # so opting out is correct — the escape-hatch is litellm's own kwarg.
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "_skip_mcp_handler": True}
 
     if provider == "openai":
         # Any non-api.openai.com OpenAI-compatible endpoint needs api_base.

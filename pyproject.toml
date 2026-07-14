@@ -30,10 +30,6 @@ dependencies = [
     "anthropic>=0.40.0",
     "litellm>=1.55.0",
     "instructor>=1.6.0",
-    # litellm ≥1.55 `main.completion` transitively imports `litellm.proxy`, which
-    # top-level `from fastapi import HTTPException, Request`. Any instructor
-    # `create_with_completion` path hits it. Drop when upstream guards the MCP import.
-    "fastapi>=0.100",
     "tiktoken>=0.7.0",
 
     # ─ Chunker: Rust-core paragraph→sentence→word cascade with tiktoken-aware
