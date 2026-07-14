@@ -194,3 +194,9 @@ variable "gpu_metrics_namespace" {
   type        = string
   default     = "OCR/vLLM/GPU"
 }
+
+variable "hf_token_ssm_param" {
+  description = "SSM SecureString parameter name holding the HF Hub read token. All vLLM boxes receive it in env."
+  type        = string
+  default     = "/ocr-bench/hf_token"
+}

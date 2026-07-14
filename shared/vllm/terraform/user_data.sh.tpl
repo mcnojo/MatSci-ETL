@@ -17,6 +17,16 @@ sudo -u "$SERVE_USER" -H bash -lc 'pip install "vllm>=0.24,<0.25" openai'
 echo "[bootstrap] log file"
 install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"
 
+# HF token fetch — without this, anonymous HF Hub requests get throttled to
+# ~0.5 MB/min and large model downloads (gemma-4-12b at ~24 GB) stall for
+# hours. Silent-fallback to empty on missing param so a rotation typo doesn't
+# break the box loudly — vLLM just reverts to anonymous throttling.
+echo "[bootstrap] HF token fetch"
+HF_TOKEN_VALUE="$(aws ssm get-parameter \
+    --region "${aws_region}" \
+    --name "${hf_token_ssm_param}" \
+    --with-decryption --query Parameter.Value --output text 2>/dev/null || true)"
+
 %{ for i, svc in services ~}
 echo "[bootstrap] systemd: ocr-vllm-${svc.key} (${svc.hf_model_id} :${svc.port})"
 # `vllm` lives in the serve user's ~/.local/bin per the DLAMI Python layout.
@@ -41,6 +51,7 @@ User=$SERVE_USER
 WorkingDirectory=/home/$SERVE_USER
 Environment=HOME=/home/$SERVE_USER
 Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HF_TOKEN=$HF_TOKEN_VALUE
 %{ if i > 0 ~}
 ExecStartPre=/bin/bash -c 'until curl -fsS --max-time 2 http://localhost:${services[0].port}/health >/dev/null 2>&1; do sleep 5; done'
 %{ endif ~}

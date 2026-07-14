@@ -195,6 +195,30 @@ data "aws_iam_policy_document" "vllm" {
     actions   = ["cloudwatch:PutMetricData"]
     resources = ["*"]
   }
+
+  # HF token pull at boot — user_data exports the value into every vLLM
+  # systemd unit's env so downloads authenticate against HF Hub.
+  statement {
+    sid     = "HfTokenRead"
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.hf_token_ssm_param}",
+    ]
+  }
+
+  # SSM SecureString values are KMS-encrypted; the get-parameter call needs
+  # Decrypt on the SSM-managed key. Scoped via ViaService to prevent this role
+  # from decrypting anything unrelated.
+  statement {
+    sid       = "SsmKmsDecrypt"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "vllm" {
@@ -239,6 +263,7 @@ resource "aws_instance" "vllm" {
     aws_region            = var.region
     gpu_metrics_interval  = var.gpu_metrics_interval_s
     gpu_metrics_namespace = var.gpu_metrics_namespace
+    hf_token_ssm_param    = var.hf_token_ssm_param
   })
 
   # One `vllm_role_<key>=true` tag per served role. shared/vllm/resolve.py
