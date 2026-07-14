@@ -15,8 +15,8 @@
 
 tree_llm:
   provider: openai
-  model: "google/gemma-4-E4B-it"                # instruction-tuned; ships a chat template. Must match shared/vllm var.models["gemma"].hf_model_id.
-  model_fast: "google/gemma-4-E4B-it"           # same box for both — no separate fast/strong split under this model.
+  model: "google/gemma-4-12b-it"                # mainline 12B (not the E4B edge variant); stronger JSON-schema conformance under vLLM guided decoding. Must match shared/vllm var.models["gemma"].hf_model_id.
+  model_fast: "google/gemma-4-12b-it"           # same box for both — no separate fast/strong split under this model.
   base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_gemma=true)
   api_key_env: null                             # no key needed for in-VPC vLLM
   prompt_style: local

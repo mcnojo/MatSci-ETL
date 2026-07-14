@@ -66,11 +66,11 @@ variable "models" {
       ]
     }
     gemma = {
-      instance_type          = "g6e.xlarge" # 1× L40S 48 GB. gemma BF16 ~16 GB + 128K KV fits at 0.85.
-      hf_model_id            = "google/gemma-4-E4B-it"
+      instance_type          = "g6e.xlarge" # 1× L40S 48 GB. gemma-4-12b BF16 ~24 GB weights; sliding-window KV holds 128K at 0.90 util.
+      hf_model_id            = "google/gemma-4-12b-it"
       port                   = 8005
-      max_model_len          = 131072 # full 128K — kills `generate_toc_continue` truncation.
-      gpu_memory_utilization = 0.85
+      max_model_len          = 131072 # full 128K — kills `generate_toc_continue` truncation. If boot OOMs on KV, drop to 32768.
+      gpu_memory_utilization = 0.90
       extra_args             = "" # FP8 still blocked on Gemma4 heterogeneous head_dim (vLLM 0.23.0).
     }
   }
