@@ -20,7 +20,7 @@ tree_llm:
   base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_gemma=true)
   api_key_env: null                             # no key needed for in-VPC vLLM
   prompt_style: local
-  max_response_tokens: 8192                     # p99 observed gen ≤500 tok; higher just bloats retry budget.
+  max_response_tokens: 16384                    # 8192 truncated real TOC generations once the schema stopped accepting empty responses; 16384 fits worst-case section counts on long review papers.
 
 # Vision server (OCR model, any OpenAI-compatible endpoint)
 vision_server:
