@@ -21,6 +21,12 @@ tree_llm:
   api_key_env: null                             # no key needed for in-VPC vLLM
   prompt_style: local
   max_response_tokens: 16384                    # 8192 truncated real TOC generations once the schema stopped accepting empty responses; 16384 fits worst-case section counts on long review papers.
+  # temp=0 + guided decoding never samples the close-array branch → runaway.
+  # 1.0/0.95/64 per Gemma-4's RLHF-tuned distribution.
+  sampling:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 64
 
 # Vision server (OCR model, any OpenAI-compatible endpoint)
 vision_server:

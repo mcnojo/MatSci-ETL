@@ -30,7 +30,9 @@ class _FakeCallLlm:
             return {"page_index_given_in_toc": "no"}
         if response_schema == "toc_completion":
             return {"completed": "yes"}
-        if response_schema == "toc_list":
+        # toc_list_initial: strict variant used by generate_toc_init (min_length=1).
+        # Same payload shape as toc_list; distinct key so guided decoding sees the stricter schema.
+        if response_schema in ("toc_list", "toc_list_initial"):
             return {
                 "toc": [
                     {"structure": "1", "title": "Section 1",

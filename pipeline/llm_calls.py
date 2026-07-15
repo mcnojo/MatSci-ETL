@@ -61,6 +61,16 @@ def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
         "timeout": LLM_REQUEST_TIMEOUT_S,
     }
 
+    # top_p/top_k are OpenAI-shape; anthropic samples differently.
+    sampling = cfg.get("sampling") or {}
+    if "temperature" in sampling:
+        kwargs["temperature"] = float(sampling["temperature"])
+    if provider == "openai":
+        if "top_p" in sampling:
+            kwargs["top_p"] = float(sampling["top_p"])
+        if "top_k" in sampling:
+            kwargs["top_k"] = int(sampling["top_k"])
+
     if provider == "openai":
         # Any non-api.openai.com OpenAI-compatible endpoint needs api_base.
         kwargs["api_base"] = resolve_vllm_url(cfg["base_url"])
@@ -97,7 +107,7 @@ async def execute_text_call(
     `perf_counter()` is process-local and would break that.
     """
     litellm_model, kwargs = _completion_kwargs(config, model)
-    kwargs["temperature"] = temperature
+    kwargs.setdefault("temperature", temperature)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
@@ -145,7 +155,7 @@ async def execute_structured_call(
     serialization; the workflow reads `data` by key.
     """
     litellm_model, kwargs = _completion_kwargs(config, model)
-    kwargs["temperature"] = temperature
+    kwargs.setdefault("temperature", temperature)
 
     # Mode picks the wire format instructor emits for schema-constrained output.
     # vLLM's OpenAI-compat frontend has no `--tool-call-parser` wired by default
