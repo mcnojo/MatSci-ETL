@@ -333,11 +333,9 @@ def _generate_toc_init_upstream(*, part: str) -> str:
     )
 
 
-# Scientific journal articles have no printed TOC but follow a well-known
-# rhetorical structure. Steers the model to search for these implicit headers
-# rather than collapse to the schema minimum "{}". Depth is capped at 2 to
-# prevent guided-decoding runaway — deeper subsections roll up under their
-# parent, they are not dropped.
+# Steers gemma to identify implicit section headers in scientific papers
+# instead of collapsing to the schema minimum. Depth-2 cap prevents
+# guided-decoding runaway; deeper headings roll up under their parent.
 _SCIENTIFIC_PAPER_HINTS = """
 This document is a scientific journal article with no printed Table of
 Contents. Produce a HIGH-LEVEL table of contents from the body text —

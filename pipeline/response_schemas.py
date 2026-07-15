@@ -1,12 +1,13 @@
 """Pydantic schemas for tree-building LLM structured outputs.
 
-Named entries in `RESPONSE_SCHEMAS` cross the Temporal activity boundary as a
-string key — Pydantic classes can't serialize as workflow input, so the workflow
-passes the key and the activity resolves it. `extra="allow"` on TocItem lets
-downstream code annotate items (appear_start, list_index, etc.) without churn.
+RESPONSE_SCHEMAS keys cross the Temporal boundary as strings (Pydantic classes
+can't serialize as workflow input). Downstream annotations (appear_start,
+list_index) live on the model_dump dict, not the instance — schemas stay strict.
 """
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
 def _yn(v) -> str:
@@ -50,12 +51,22 @@ class TocCompletion(BaseModel):
         return _yn(v)
 
 
+# maxLength propagates to the JSON schema → vLLM guided decoding enforces
+# per-token. Bounds sized for long journal titles, depth-2 structure indices,
+# and <physical_index_XXXXXXX> tags.
+_BoundedTitle = Annotated[str, StringConstraints(max_length=300)]
+_BoundedStructure = Annotated[str, StringConstraints(max_length=16)]
+_BoundedIndex = Annotated[str, StringConstraints(max_length=32)]
+
+
 class TocItem(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    title: str = ""
-    structure: str | None = None
-    physical_index: int | str | None = None
-    page: int | str | None = None
+    # extra="forbid" → additionalProperties: false; blocks guided decoding from
+    # inventing per-entry keys (primary driver of the 16K runaway).
+    model_config = ConfigDict(extra="forbid")
+    title: _BoundedTitle = ""
+    structure: _BoundedStructure | None = None
+    physical_index: int | _BoundedIndex | None = None
+    page: int | _BoundedIndex | None = None
 
 
 class TocList(BaseModel):
@@ -63,10 +74,9 @@ class TocList(BaseModel):
     toc: list[TocItem] = Field(default_factory=list)
 
 
-# Initial TOC generation must produce ≥1 item — an empty list is the shortest
-# schema-valid completion under vLLM guided decoding, and gemma was collapsing
-# to it, cascading to the "Document" fallback. min_length=1 forces instructor
-# to see a ValidationError and retry with a repair prompt.
+# min_length=1: the empty list is the shortest schema-valid completion under
+# guided decoding — gemma was collapsing to it, cascading to the "Document"
+# fallback. Forces instructor into a ValidationError → repair round.
 class TocListInitial(BaseModel):
     model_config = ConfigDict(extra="ignore")
     toc: list[TocItem] = Field(min_length=1)
