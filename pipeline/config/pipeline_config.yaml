@@ -20,7 +20,7 @@ tree_llm:
   base_url: "vllm-instance://gemma:8005/v1"     # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_gemma=true)
   api_key_env: null                             # no key needed for in-VPC vLLM
   prompt_style: local
-  max_response_tokens: 16384                    # response cap per chat call. Fits inside gemma's 128K window alongside tree.max_tokens_per_node.
+  max_response_tokens: 8192                     # p99 observed gen ≤500 tok; higher just bloats retry budget.
 
 # Vision server (OCR model, any OpenAI-compatible endpoint)
 vision_server:

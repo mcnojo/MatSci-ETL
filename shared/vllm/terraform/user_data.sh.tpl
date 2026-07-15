@@ -2,6 +2,8 @@
 # vLLM box bootstrap. Rendered by templatefile(); runs once at first boot.
 # Weights sync from S3 (bin/stage_model.sh) — never from HF Hub at runtime
 # (prior gemma-4-12b download stalled at byte 7,875,958 from us-west-2).
+# Weights land on the DLAMI's instance-store NVMe (multi-GB/s) rather than
+# the root EBS (previously ~9 MB/s on chandra, causing a 20-min shard load).
 # `services` = [{key, hf_model_id, hf_revision, port, ...}, ...]; chandra's
 # box carries a bge-m3 embedding secondary alongside the primary OCR model.
 
@@ -10,7 +12,15 @@ exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 
 
 VLLM_LOG=/var/log/vllm.log
 SERVE_USER=ubuntu
-MODELS_ROOT=/opt/models
+# DLAMI mounts local instance-store NVMe here (~250 GB on g6/g6e.xlarge).
+# Fail loud if it's absent — the root EBS path is 10-100x slower and would
+# silently regress load times.
+NVME_MOUNT=/opt/dlami/nvme
+mountpoint -q "$NVME_MOUNT" || {
+    echo "[bootstrap] FATAL: expected DLAMI NVMe mount at $NVME_MOUNT not present" >&2
+    exit 1
+}
+MODELS_ROOT="$NVME_MOUNT/models"
 WEIGHTS_BUCKET="${weights_bucket}"
 
 echo "[bootstrap] pip install"

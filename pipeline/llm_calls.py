@@ -7,6 +7,7 @@ no hand-rolled fallback in the workflow). Neither retries transport failures —
 Temporal's activity RetryPolicy owns that layer.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -24,6 +25,9 @@ log = logging.getLogger("llm_calls")
 # "Yes/No case mismatch" / "unwrapped array" retries; more than that usually
 # means the schema is wrong, not the model.
 _INSTRUCTOR_MAX_RETRIES = 3
+
+# Per-call ceiling; under GPU_ACTIVITY_TIMEOUT so Temporal doesn't cancel first.
+LLM_REQUEST_TIMEOUT_S = 25 * 60
 
 
 def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
@@ -51,7 +55,11 @@ def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
     # default TOOLS mode always sets `tools=[...]`, so every structured call
     # trips that chain unless we opt out here. We never route to an MCP gateway,
     # so opting out is correct — the escape-hatch is litellm's own kwarg.
-    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "_skip_mcp_handler": True}
+    kwargs: dict[str, Any] = {
+        "max_tokens": max_tokens,
+        "_skip_mcp_handler": True,
+        "timeout": LLM_REQUEST_TIMEOUT_S,
+    }
 
     if provider == "openai":
         # Any non-api.openai.com OpenAI-compatible endpoint needs api_base.
@@ -94,10 +102,14 @@ async def execute_text_call(
         kwargs["response_format"] = {"type": "json_object"}
 
     started_at = time.time()
-    response = await litellm.acompletion(
-        model=litellm_model,
-        messages=[{"role": "user", "content": prompt}],
-        **kwargs,
+    # Hard envelope — httpx read timeout can be defeated by TCP keepalive.
+    response = await asyncio.wait_for(
+        litellm.acompletion(
+            model=litellm_model,
+            messages=[{"role": "user", "content": prompt}],
+            **kwargs,
+        ),
+        timeout=LLM_REQUEST_TIMEOUT_S,
     )
     ended_at = time.time()
 
@@ -147,12 +159,16 @@ async def execute_structured_call(
     )
     client = instructor.from_litellm(litellm.acompletion, mode=mode)
     started_at = time.time()
-    parsed, raw = await client.chat.completions.create_with_completion(
-        model=litellm_model,
-        messages=[{"role": "user", "content": prompt}],
-        response_model=response_model,
-        max_retries=_INSTRUCTOR_MAX_RETRIES,
-        **kwargs,
+    # Envelope covers all instructor retries, not just one httpx call.
+    parsed, raw = await asyncio.wait_for(
+        client.chat.completions.create_with_completion(
+            model=litellm_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_model=response_model,
+            max_retries=_INSTRUCTOR_MAX_RETRIES,
+            **kwargs,
+        ),
+        timeout=LLM_REQUEST_TIMEOUT_S,
     )
     ended_at = time.time()
 

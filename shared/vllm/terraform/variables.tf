@@ -80,7 +80,10 @@ variable "models" {
       port                   = 8005
       max_model_len          = 131072 # full 128K — kills `generate_toc_continue` truncation. If boot OOMs on KV, drop to 32768.
       gpu_memory_utilization = 0.90
-      extra_args             = "" # FP8 still blocked on Gemma4 heterogeneous head_dim (vLLM 0.23.0).
+      # --max-num-seqs 2 doubles per-request tok/s vs 4-way default; prefix
+      # caching reuses the shared system/schema header across tree-walk calls.
+      # FP8 still blocked on Gemma4 heterogeneous head_dim (vLLM 0.23.0).
+      extra_args             = "--max-num-seqs 2 --enable-prefix-caching"
     }
   }
 

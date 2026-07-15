@@ -45,14 +45,8 @@ GPU_RETRY_POLICY = RetryPolicy(
 
 NO_RETRY_POLICY = RetryPolicy(maximum_attempts=1)
 
-# Timeout defaults
-# start_to_close: max wall-clock per single activity attempt.
-# schedule_to_close: max wall-clock from task scheduled to final completion
-#                    (spans all retry attempts).
-# heartbeat:       max gap between activity.heartbeat() calls before Temporal
-#                  considers the worker dead and schedules a retry. Set well
-#                  below start_to_close so Spot interruptions are detected
-#                  within seconds, not minutes.
+# start_to_close = per-attempt ceiling; heartbeat = liveness gap (kept tight
+# for fast Spot-preempt detection; await_with_heartbeats ticks every 20s).
 
 CPU_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 GPU_ACTIVITY_TIMEOUT = timedelta(minutes=30)
