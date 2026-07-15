@@ -335,12 +335,14 @@ def _generate_toc_init_upstream(*, part: str) -> str:
 
 # Scientific journal articles have no printed TOC but follow a well-known
 # rhetorical structure. Steers the model to search for these implicit headers
-# rather than collapse to the schema minimum "{}".
+# rather than collapse to the schema minimum "{}". Depth is capped at 2 to
+# prevent guided-decoding runaway — deeper subsections roll up under their
+# parent, they are not dropped.
 _SCIENTIFIC_PAPER_HINTS = """
-This document is a scientific journal article. It does NOT have a printed
-Table of Contents, but it DOES have implicit section structure that you MUST
-identify from the body text. Typical section headers to look for (any subset
-may appear, in this order):
+This document is a scientific journal article with no printed Table of
+Contents. Produce a HIGH-LEVEL table of contents from the body text —
+top-level sections and their immediate (first-level) subsections only.
+Typical top-level headers to look for (any subset, roughly in this order):
 
   Abstract, Introduction, (Related Work | Background), Methods (or Materials
   and Methods, Experimental, Computational Details), Results, Discussion
@@ -348,8 +350,11 @@ may appear, in this order):
   References (or Bibliography), Supporting Information (or Supplementary
   Information).
 
-Numbered subsection headers of the form "2.1", "2.1.1", "3.a" are also
-section headers and MUST be included with their full structure index.
+Depth cap — STRICT: the structure index has AT MOST two dotted components.
+  Allowed:   "1", "2", "2.1", "3.a"
+  Forbidden: "2.1.1", "3.a.i", "1.2.3", or anything deeper.
+Deeper headings in the body are rolled up under their parent — do NOT emit
+them as their own entries. This is a high-level TOC, not a full outline.
 
 Section headers in the body are usually on their own line, in bold/larger
 font, without trailing punctuation, and introduce a new topical block.
@@ -357,9 +362,9 @@ Extract each one with the physical_index of the page it starts on.
 
 An empty TOC is NEVER correct for a scientific paper — every paper has at
 least an Introduction and either a Conclusion or References section. If you
-cannot find labeled section headers, identify the largest visual/topical
-divisions in the body text and label them (e.g. "Introduction",
-"Methods", "Results", "Discussion", "References") based on content.
+cannot find labeled section headers, identify the largest topical divisions
+in the body text and label them (e.g. "Introduction", "Methods", "Results",
+"Discussion", "References") based on content.
 """
 
 
