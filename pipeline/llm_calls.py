@@ -160,16 +160,31 @@ async def execute_structured_call(
     client = instructor.from_litellm(litellm.acompletion, mode=mode)
     started_at = time.time()
     # Envelope covers all instructor retries, not just one httpx call.
-    parsed, raw = await asyncio.wait_for(
-        client.chat.completions.create_with_completion(
-            model=litellm_model,
-            messages=[{"role": "user", "content": prompt}],
-            response_model=response_model,
-            max_retries=_INSTRUCTOR_MAX_RETRIES,
-            **kwargs,
-        ),
-        timeout=LLM_REQUEST_TIMEOUT_S,
-    )
+    try:
+        parsed, raw = await asyncio.wait_for(
+            client.chat.completions.create_with_completion(
+                model=litellm_model,
+                messages=[{"role": "user", "content": prompt}],
+                response_model=response_model,
+                max_retries=_INSTRUCTOR_MAX_RETRIES,
+                **kwargs,
+            ),
+            timeout=LLM_REQUEST_TIMEOUT_S,
+        )
+    except Exception as exc:
+        # Instructor swallows the raw model output on retry-exhaust; surface
+        # last_completion if attached, else the prompt tail, so we can diagnose
+        # "gemma emitted the schema minimum" without adding a wire trace.
+        last = getattr(exc, "last_completion", None)
+        raw_tail = (
+            (last.choices[0].message.content or "")[-500:]
+            if last and getattr(last, "choices", None) else "<unavailable>"
+        )
+        log.warning(
+            "execute_structured_call failed schema=%s model=%s: %s | raw_tail=%r | prompt_tail=%r",
+            response_model.__name__, model, exc, raw_tail, prompt[-300:],
+        )
+        raise
     ended_at = time.time()
 
     in_t, out_t = _usage(raw)

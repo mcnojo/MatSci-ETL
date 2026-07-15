@@ -602,9 +602,10 @@ async def generate_toc_init(
             "generate_toc_init", opt,
             page={"part": _page(part_indices, wrap="physical_index")},
         )
-    # instructor validates+repairs truncation; the previous finish_reason=="length"
-    # gate is subsumed — a genuinely un-repairable response propagates as an exception.
-    return await call_llm.parsed(opt.model, spec, "toc_list")
+    # "toc_list_initial" enforces min_length=1 so an empty response raises
+    # ValidationError, forcing instructor to retry (rather than silently
+    # cascading to the "Document" fallback via an empty tree).
+    return await call_llm.parsed(opt.model, spec, "toc_list_initial")
 
 
 async def generate_toc_continue(

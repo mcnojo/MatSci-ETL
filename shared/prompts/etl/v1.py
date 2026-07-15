@@ -333,7 +333,72 @@ def _generate_toc_init_upstream(*, part: str) -> str:
     )
 
 
-_generate_toc_init_local = _generate_toc_init_upstream
+# Scientific journal articles have no printed TOC but follow a well-known
+# rhetorical structure. Steers the model to search for these implicit headers
+# rather than collapse to the schema minimum "{}".
+_SCIENTIFIC_PAPER_HINTS = """
+This document is a scientific journal article. It does NOT have a printed
+Table of Contents, but it DOES have implicit section structure that you MUST
+identify from the body text. Typical section headers to look for (any subset
+may appear, in this order):
+
+  Abstract, Introduction, (Related Work | Background), Methods (or Materials
+  and Methods, Experimental, Computational Details), Results, Discussion
+  (or Results and Discussion combined), Conclusion(s), Acknowledgments,
+  References (or Bibliography), Supporting Information (or Supplementary
+  Information).
+
+Numbered subsection headers of the form "2.1", "2.1.1", "3.a" are also
+section headers and MUST be included with their full structure index.
+
+Section headers in the body are usually on their own line, in bold/larger
+font, without trailing punctuation, and introduce a new topical block.
+Extract each one with the physical_index of the page it starts on.
+
+An empty TOC is NEVER correct for a scientific paper — every paper has at
+least an Introduction and either a Conclusion or References section. If you
+cannot find labeled section headers, identify the largest visual/topical
+divisions in the body text and label them (e.g. "Introduction",
+"Methods", "Results", "Discussion", "References") based on content.
+"""
+
+
+def _generate_toc_init_local(*, part: str) -> str:
+    return (
+        """
+    You are extracting the hierarchical section structure of a scientific
+    journal article. Return the list of sections with their positions.
+    """
+        + _SCIENTIFIC_PAPER_HINTS
+        + """
+    Structure index: a numeric hierarchy label. First section = "1", its
+    first subsection = "1.1", second subsection = "1.2", second top-level
+    section = "2", and so on.
+
+    Title: the section header text as it appears in the body, only fixing
+    obvious whitespace inconsistency.
+
+    Physical index: the input text contains <physical_index_X> tags marking
+    the start of each page. For each section, emit the tag of the page on
+    which the section header appears. Keep the literal <physical_index_X>
+    format.
+
+    Return a single JSON object with one key "toc":
+        {
+            "toc": [
+                {
+                    "structure": "1",
+                    "title": "Introduction",
+                    "physical_index": "<physical_index_2>"
+                },
+                ...
+            ]
+        }
+
+    Directly return the JSON object. Do not output anything else."""
+        + _STRUCTURAL_RULES
+        + "\nGiven text:\n" + part
+    )
 
 
 # generate_toc_init_with_hint
@@ -377,7 +442,42 @@ def _generate_toc_init_with_hint_upstream(*, part: str, toc_hint: str) -> str:
     )
 
 
-_generate_toc_init_with_hint_local = _generate_toc_init_with_hint_upstream
+def _generate_toc_init_with_hint_local(*, part: str, toc_hint: str) -> str:
+    # Scientific papers rarely reach this variant (check_toc almost always
+    # returns "no TOC" for journal articles), but if a hint is present we
+    # still treat it as advisory and cross-check against the body.
+    return (
+        """
+    You are extracting the hierarchical section structure of a scientific
+    journal article. A partial TOC hint has been extracted from the front
+    matter — use it as a guide, but verify every entry against the body
+    text (hints frequently omit end-matter like References or Supporting
+    Information, and titles may be abbreviated).
+    """
+        + _SCIENTIFIC_PAPER_HINTS
+        + """
+    Structure index: numeric hierarchy label ("1", "1.1", "2", ...).
+    Title: as it appears in the body, whitespace-fixed only.
+    Physical index: the <physical_index_X> tag of the page where the
+    section header appears. Keep the literal tag format.
+
+    Return a single JSON object with one key "toc":
+        {
+            "toc": [
+                {
+                    "structure": "1",
+                    "title": "Introduction",
+                    "physical_index": "<physical_index_2>"
+                },
+                ...
+            ]
+        }
+
+    Directly return the JSON object. Do not output anything else."""
+        + _STRUCTURAL_RULES
+        + "\nTable of contents (hint):\n" + toc_hint
+        + "\nGiven text:\n" + part
+    )
 
 
 # generate_toc_continue

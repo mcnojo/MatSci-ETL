@@ -63,6 +63,15 @@ class TocList(BaseModel):
     toc: list[TocItem] = Field(default_factory=list)
 
 
+# Initial TOC generation must produce ≥1 item — an empty list is the shortest
+# schema-valid completion under vLLM guided decoding, and gemma was collapsing
+# to it, cascading to the "Document" fallback. min_length=1 forces instructor
+# to see a ValidationError and retry with a repair prompt.
+class TocListInitial(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    toc: list[TocItem] = Field(min_length=1)
+
+
 class TitleAppearance(BaseModel):
     model_config = ConfigDict(extra="ignore")
     answer: str = "no"
@@ -109,6 +118,7 @@ RESPONSE_SCHEMAS: dict[str, type[BaseModel]] = {
     "page_index_present": PageIndexPresent,
     "toc_completion": TocCompletion,
     "toc_list": TocList,
+    "toc_list_initial": TocListInitial,
     "title_appearance": TitleAppearance,
     "title_starts_section": TitleStartsSection,
     "physical_index_fix": PhysicalIndexFix,
