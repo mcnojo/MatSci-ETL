@@ -87,8 +87,15 @@ step "shared/temporal init + apply"
     ${temporal_args[@]+"${temporal_args[@]}"} \
     ${extra_args[@]+"${extra_args[@]}"}
 
-step "shared/vllm init + apply"
+step "shared/vllm init"
+# Split init/apply so the stager below can read var.models via `terraform console`.
 "$TF" shared/vllm init -input=false -upgrade
+
+step "stage models to S3 (idempotent; skips tuples already .done)"
+# Fails loudly here rather than letting a $1.86/hr box loop on a missing marker.
+"$REPO_ROOT/bin/stage_model.sh" --all
+
+step "shared/vllm apply"
 "$TF" shared/vllm apply -auto-approve -input=false \
     ${vllm_args[@]+"${vllm_args[@]}"} \
     ${extra_args[@]+"${extra_args[@]}"}

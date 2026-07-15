@@ -1,14 +1,17 @@
 #!/bin/bash
-# vLLM box bootstrap. Rendered by terraform's templatefile(); runs once at first boot.
-# One systemd unit per served role: `services` is a flat list [{key, hf_model_id,
-# port, max_model_len, gpu_memory_utilization, extra_args}, ...]. Chandra's box
-# carries a second bge-m3 embedding process alongside the primary OCR model.
+# vLLM box bootstrap. Rendered by templatefile(); runs once at first boot.
+# Weights sync from S3 (bin/stage_model.sh) — never from HF Hub at runtime
+# (prior gemma-4-12b download stalled at byte 7,875,958 from us-west-2).
+# `services` = [{key, hf_model_id, hf_revision, port, ...}, ...]; chandra's
+# box carries a bge-m3 embedding secondary alongside the primary OCR model.
 
 set -euo pipefail
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
 VLLM_LOG=/var/log/vllm.log
 SERVE_USER=ubuntu
+MODELS_ROOT=/opt/models
+WEIGHTS_BUCKET="${weights_bucket}"
 
 echo "[bootstrap] pip install"
 sudo -u "$SERVE_USER" -H bash -lc 'pip install --upgrade pip'
@@ -17,25 +20,39 @@ sudo -u "$SERVE_USER" -H bash -lc 'pip install "vllm>=0.24,<0.25" openai'
 echo "[bootstrap] log file"
 install -m 0644 -o "$SERVE_USER" -g "$SERVE_USER" /dev/null "$VLLM_LOG"
 
-# HF token fetch — without this, anonymous HF Hub requests get throttled to
-# ~0.5 MB/min and large model downloads (gemma-4-12b at ~24 GB) stall for
-# hours. Silent-fallback to empty on missing param so a rotation typo doesn't
-# break the box loudly — vLLM just reverts to anonymous throttling.
-echo "[bootstrap] HF token fetch"
-HF_TOKEN_VALUE="$(aws ssm get-parameter \
-    --region "${aws_region}" \
-    --name "${hf_token_ssm_param}" \
-    --with-decryption --query Parameter.Value --output text 2>/dev/null || true)"
+echo "[bootstrap] models root"
+install -d -m 0755 -o "$SERVE_USER" -g "$SERVE_USER" "$MODELS_ROOT"
 
 %{ for i, svc in services ~}
+echo "[bootstrap] stage weights: ${svc.key} (${svc.hf_model_id}@${svc.hf_revision})"
+# .done marker check first — its absence means a half-stage; refuse to serve.
+SVC_${svc.key}_DIR="$MODELS_ROOT/${svc.key}"
+install -d -m 0755 -o "$SERVE_USER" -g "$SERVE_USER" "$SVC_${svc.key}_DIR"
+
+if ! sudo -u "$SERVE_USER" -H aws s3 ls \
+     "s3://$WEIGHTS_BUCKET/models/${svc.hf_model_id}/${svc.hf_revision}/.done" >/dev/null 2>&1; then
+    echo "[bootstrap] FATAL: no .done marker at s3://$WEIGHTS_BUCKET/models/${svc.hf_model_id}/${svc.hf_revision}/" >&2
+    echo "[bootstrap]        run: bin/stage_model.sh ${svc.hf_model_id} ${svc.hf_revision}" >&2
+    exit 1
+fi
+
+sudo -u "$SERVE_USER" -H aws s3 sync \
+    "s3://$WEIGHTS_BUCKET/models/${svc.hf_model_id}/${svc.hf_revision}/" \
+    "$SVC_${svc.key}_DIR/" \
+    --exact-timestamps --only-show-errors
+
+# config.json missing => sync landed on an empty prefix; don't boot.
+[[ -s "$SVC_${svc.key}_DIR/config.json" ]] || {
+    echo "[bootstrap] FATAL: $SVC_${svc.key}_DIR/config.json missing after sync" >&2
+    exit 1
+}
+
 echo "[bootstrap] systemd: ocr-vllm-${svc.key} (${svc.hf_model_id} :${svc.port})"
-# `vllm` lives in the serve user's ~/.local/bin per the DLAMI Python layout.
-# Co-hosted secondaries (i>0) serialize behind the primary: After= + a hard
-# ExecStartPre that blocks until the primary answers /health, so CUDA context
-# creation and gpu_memory_utilization budgeting happen sequentially on the
-# single shared device. Without this, both processes race torch.cuda.init and
-# the secondary usually loses (hangs on the driver lock or misreads free VRAM
-# and OOMs on model load).
+# vllm lives in ubuntu's ~/.local/bin (DLAMI layout). Secondaries (i>0)
+# serialize behind the primary via After=+Requires=+ExecStartPre curl loop
+# so both units don't race torch.cuda.init on the shared device.
+# HF_HUB_OFFLINE=1 => no silent Hub fallback on cache miss. --served-model-name
+# keeps the OpenAI-API `model` field = HF ID even though we load from disk.
 cat > /etc/systemd/system/ocr-vllm-${svc.key}.service <<UNIT_EOF
 [Unit]
 Description=vLLM serve ${svc.hf_model_id} (${svc.key})
@@ -51,11 +68,12 @@ User=$SERVE_USER
 WorkingDirectory=/home/$SERVE_USER
 Environment=HOME=/home/$SERVE_USER
 Environment=PATH=/home/$SERVE_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HF_TOKEN=$HF_TOKEN_VALUE
+Environment=HF_HUB_OFFLINE=1
 %{ if i > 0 ~}
 ExecStartPre=/bin/bash -c 'until curl -fsS --max-time 2 http://localhost:${services[0].port}/health >/dev/null 2>&1; do sleep 5; done'
 %{ endif ~}
-ExecStart=/home/$SERVE_USER/.local/bin/vllm serve ${svc.hf_model_id} \\
+ExecStart=/home/$SERVE_USER/.local/bin/vllm serve $SVC_${svc.key}_DIR \\
+    --served-model-name ${svc.hf_model_id} \\
     --port ${svc.port} \\
     --tensor-parallel-size 1 \\
     --gpu-memory-utilization ${svc.gpu_memory_utilization} \\
@@ -127,4 +145,4 @@ UNIT_EOF
 systemctl daemon-reload
 systemctl enable --now ocr-gpu-metrics.timer
 
-echo "[bootstrap] complete (models still downloading — tail $VLLM_LOG)"
+echo "[bootstrap] complete (vLLM starting from local weights — tail $VLLM_LOG)"

@@ -18,6 +18,7 @@ output "models" {
           role_key    = svc.key
           role_tag    = "vllm_role_${svc.key}" # EC2 tag key set to "true" on this instance
           hf_model_id = svc.hf_model_id
+          hf_revision = svc.hf_revision
           port        = svc.port
         }
       ]

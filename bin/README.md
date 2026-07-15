@@ -44,7 +44,22 @@ aws ssm put-parameter \
 # 4. The artifact bucket (chem-lit-artifacts) is read by terraform via a data
 #    source — pre-create it manually if it doesn't already exist:
 aws s3 mb s3://chem-lit-artifacts --region us-west-2
+
+# 5. HF Hub read token — used by bin/stage_model.sh only (vLLM boxes never
+#    talk to the Hub; they read weights offline from S3). Get one at
+#    https://huggingface.co/settings/tokens (read-only is enough).
+aws ssm put-parameter --overwrite --type SecureString \
+    --name /ocr-bench/hf_token --value "hf_..."
 ```
+
+---
+
+## Staging model weights
+
+vLLM boxes serve weights offline from S3; `bin/<motif>/up.sh` calls
+`bin/stage_model.sh --all` before applying `shared/vllm`. For ad-hoc stage
+/ list / delete commands (and the concrete `gemma-4-12b-it` walkthrough)
+see `docs/how_to.md` §0.6 and §2.5.
 
 ---
 
@@ -53,7 +68,7 @@ aws s3 mb s3://chem-lit-artifacts --region us-west-2
 ### Batch
 
 ```bash
-bin/batch/up.sh                                   # ~10 min cold (vLLM model dl)
+bin/batch/up.sh                                   # ~5 min cold (S3 sync); first-ever stage is +20-30 min
 bin/batch/submit.sh ./pdfs/ --batch-id my-corpus  # uploads then triggers Lambda
 # … wait for the workflow to complete (watch in Temporal UI URL printed above) …
 bin/batch/down.sh                                  # ~2 min
@@ -123,13 +138,16 @@ brings the bill to near zero (only S3 + DDB linger).
 bin/
 ├── bootstrap_tf_backend.sh   # one-time: create state bucket + lock table
 ├── tf.sh                     # thin terraform wrapper (passes _backend.hcl)
+├── stage_model.sh            # hf download -> aws s3 sync -> .done sentinel
+├── delete_model.sh           # remove staged weights from S3 (--list / --all / <id> [<rev>])
 ├── wait_health.sh            # poll Temporal + vLLM /health using tf outputs
+├── vllm_diag.sh              # SSM fan-out: user-data + vllm.log + unit state + listening ports
 ├── batch/
-│   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + batch + wait
+│   ├── up.sh                 # shared/platform + shared/temporal + shared/vllm (stage + apply) + batch + wait
 │   ├── submit.sh             # validate manifest, upload PDFs, upload manifest LAST
 │   └── down.sh               # shared/vllm + batch + shared/temporal destroy (platform untouched)
 └── live/
-    ├── up.sh                 # shared/platform + shared/temporal + shared/vllm + live + wait
+    ├── up.sh                 # shared/platform + shared/temporal + shared/vllm (stage + apply) + live + wait
     ├── submit.sh             # upload PDFs to live/incoming/ (S3 -> SQS fires)
     └── down.sh               # shared/vllm + live + shared/temporal destroy (platform untouched)
 ```

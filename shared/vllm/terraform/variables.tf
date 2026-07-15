@@ -28,11 +28,16 @@ variable "tags" {
 # peaks at ~17 GB / L4-24 GB and has real headroom; the workflow's embed
 # activity resolves `vllm-instance://embed:...` to the same instance IP,
 # hitting a distinct port.
+#
+# Weights come from S3 (bin/stage_model.sh stages them) — user_data syncs
+# s3://<bucket>/models/<hf_id>/<revision>/ → /opt/models/<key>/ and serves
+# with HF_HUB_OFFLINE=1. Missing .done marker fails boot loudly.
 variable "models" {
   description = "Per-instance vLLM deployment. Map keyed by primary role_key; each value pins the instance type + primary vLLM config, plus optional co-hosted secondaries."
   type = map(object({
     instance_type          = string
     hf_model_id            = string
+    hf_revision            = string # S3 subdir. Free-form ("main", SHA, ...); must match a prior bin/stage_model.sh run.
     port                   = number
     max_model_len          = number
     gpu_memory_utilization = number
@@ -40,6 +45,7 @@ variable "models" {
     secondary_services = optional(list(object({
       key                    = string
       hf_model_id            = string
+      hf_revision            = string
       port                   = number
       max_model_len          = number
       gpu_memory_utilization = number
@@ -50,6 +56,7 @@ variable "models" {
     chandra = {
       instance_type          = "g6.xlarge" # 1× L4 24 GB. chandra ~17 GB peak at 8K; embed secondary fits alongside.
       hf_model_id            = "datalab-to/chandra-ocr-2"
+      hf_revision            = "main"
       port                   = 8004
       max_model_len          = 8192
       gpu_memory_utilization = 0.75 # room for bge-m3 co-host below.
@@ -58,16 +65,18 @@ variable "models" {
         {
           key                    = "embed"       # resolves `vllm-instance://embed:8006/*` to this box.
           hf_model_id            = "BAAI/bge-m3" # 568M params, 1024-dim, strong on scientific text.
+          hf_revision            = "main"
           port                   = 8006
-          max_model_len          = 8192 # bge-m3 stops attending past 8K; larger wastes KV.
-          gpu_memory_utilization = 0.15 # ~3.6 GB on L4 24 — bge-m3 fp16 ~2.2 GB + margin.
-          extra_args             = "--runner pooling --served-model-name BAAI/bge-m3 --dtype auto"
+          max_model_len          = 8192                            # bge-m3 stops attending past 8K; larger wastes KV.
+          gpu_memory_utilization = 0.15                            # ~3.6 GB on L4 24 — bge-m3 fp16 ~2.2 GB + margin.
+          extra_args             = "--runner pooling --dtype auto" # --served-model-name set by user_data.
         },
       ]
     }
     gemma = {
       instance_type          = "g6e.xlarge" # 1× L40S 48 GB. gemma-4-12b BF16 ~24 GB weights; sliding-window KV holds 128K at 0.90 util.
       hf_model_id            = "google/gemma-4-12b-it"
+      hf_revision            = "main"
       port                   = 8005
       max_model_len          = 131072 # full 128K — kills `generate_toc_continue` truncation. If boot OOMs on KV, drop to 32768.
       gpu_memory_utilization = 0.90
@@ -195,8 +204,23 @@ variable "gpu_metrics_namespace" {
   default     = "OCR/vLLM/GPU"
 }
 
-variable "hf_token_ssm_param" {
-  description = "SSM SecureString parameter name holding the HF Hub read token. All vLLM boxes receive it in env."
+# Backend-config trio for terraform_remote_state -> shared/platform (weights
+# bucket lookup). Mirrors prod/batch + prod/live; defaults match _backend.hcl.
+variable "state_bucket" {
+  description = "S3 bucket holding shared/platform's tfstate."
   type        = string
-  default     = "/ocr-bench/hf_token"
+  default     = "ocr-benchmarking-tfstate"
 }
+
+variable "state_region" {
+  description = "Region of state_bucket."
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "state_lock_table" {
+  description = "DynamoDB lock table for state_bucket."
+  type        = string
+  default     = "ocr-benchmarking-tflock"
+}
+

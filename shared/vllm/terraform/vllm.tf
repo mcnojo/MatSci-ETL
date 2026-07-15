@@ -53,6 +53,18 @@ data "aws_ec2_instance_type_offerings" "in_az" {
   location_type = "availability-zone"
 }
 
+# Weights bucket (shared/platform, survives down.sh). Feeds user_data + IAM.
+data "terraform_remote_state" "platform" {
+  backend = "s3"
+  config = {
+    bucket         = var.state_bucket
+    key            = "shared/platform/terraform.tfstate"
+    region         = var.state_region
+    dynamodb_table = var.state_lock_table
+    encrypt        = true
+  }
+}
+
 # Deep Learning Base GPU AMI (NVIDIA, Ubuntu 22.04). Lookup is region-aware.
 data "aws_ami" "dlami" {
   count       = var.ami_id == null ? 1 : 0
@@ -87,6 +99,7 @@ locals {
       [{
         key                    = k
         hf_model_id            = m.hf_model_id
+        hf_revision            = m.hf_revision
         port                   = m.port
         max_model_len          = m.max_model_len
         gpu_memory_utilization = m.gpu_memory_utilization
@@ -196,27 +209,20 @@ data "aws_iam_policy_document" "vllm" {
     resources = ["*"]
   }
 
-  # HF token pull at boot — user_data exports the value into every vLLM
-  # systemd unit's env so downloads authenticate against HF Hub.
+  # Read-only, models/* prefix only. No write => compromised box can't mutate.
   statement {
-    sid     = "HfTokenRead"
-    actions = ["ssm:GetParameter", "ssm:GetParameters"]
-    resources = [
-      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.hf_token_ssm_param}",
-    ]
+    sid       = "WeightsRead"
+    actions   = ["s3:GetObject"]
+    resources = ["${data.terraform_remote_state.platform.outputs.vllm_weights_bucket_arn}/models/*"]
   }
-
-  # SSM SecureString values are KMS-encrypted; the get-parameter call needs
-  # Decrypt on the SSM-managed key. Scoped via ViaService to prevent this role
-  # from decrypting anything unrelated.
   statement {
-    sid       = "SsmKmsDecrypt"
-    actions   = ["kms:Decrypt"]
-    resources = ["*"]
+    sid       = "WeightsList"
+    actions   = ["s3:ListBucket"]
+    resources = [data.terraform_remote_state.platform.outputs.vllm_weights_bucket_arn]
     condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["ssm.${var.region}.amazonaws.com"]
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["models/*", "models"]
     }
   }
 }
@@ -263,7 +269,7 @@ resource "aws_instance" "vllm" {
     aws_region            = var.region
     gpu_metrics_interval  = var.gpu_metrics_interval_s
     gpu_metrics_namespace = var.gpu_metrics_namespace
-    hf_token_ssm_param    = var.hf_token_ssm_param
+    weights_bucket        = data.terraform_remote_state.platform.outputs.vllm_weights_bucket
   })
 
   # One `vllm_role_<key>=true` tag per served role. shared/vllm/resolve.py

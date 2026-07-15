@@ -12,3 +12,13 @@ output "openai_api_key_param_name" {
   description = "Full SSM name for the OpenAI key slot."
   value       = aws_ssm_parameter.openai_api_key.name
 }
+
+output "vllm_weights_bucket" {
+  description = "Pre-staged vLLM weights bucket. Read by shared/vllm user_data (s3 sync) + IAM."
+  value       = aws_s3_bucket.vllm_weights.bucket
+}
+
+output "vllm_weights_bucket_arn" {
+  description = "Weights bucket ARN — for shared/vllm's read-scoped IAM policy."
+  value       = aws_s3_bucket.vllm_weights.arn
+}
