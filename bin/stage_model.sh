@@ -141,7 +141,14 @@ trap cleanup EXIT
 
 echo "==> stager boot on \$INSTANCE_ID"
 dnf install -y python3-pip jq
-pip3 install --quiet 'huggingface_hub[cli]'
+pip3 install --quiet huggingface_hub
+
+# /tmp is tmpfs (~8 GB on m7i.xlarge); stage dirs + HF's internal buffers live
+# on the 200 GB root volume instead. TMPDIR covers anything reading it.
+STAGE_ROOT=/var/lib/stage
+mkdir -p "\$STAGE_ROOT"
+export TMPDIR="\$STAGE_ROOT/tmp"
+mkdir -p "\$TMPDIR"
 
 HF_TOKEN=\$(aws ssm get-parameter --region $AWS_REGION --name $HF_TOKEN_SSM_PARAM \
   --with-decryption --query Parameter.Value --output text)
@@ -157,7 +164,7 @@ N=\$(echo "\$TUPLES" | jq 'length')
 for i in \$(seq 0 \$((N-1))); do
   ID=\$(echo "\$TUPLES" | jq -r ".[\$i].hf_id")
   REV=\$(echo "\$TUPLES" | jq -r ".[\$i].revision")
-  STAGE=/tmp/stage-\$i
+  STAGE="\$STAGE_ROOT/\$i"
   DEST="s3://$BUCKET/models/\$ID/\$REV"
 
   echo
