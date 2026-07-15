@@ -138,7 +138,7 @@ brings the bill to near zero (only S3 + DDB linger).
 bin/
 ├── bootstrap_tf_backend.sh   # one-time: create state bucket + lock table
 ├── tf.sh                     # thin terraform wrapper (passes _backend.hcl)
-├── stage_model.sh            # hf download -> aws s3 sync -> .done sentinel
+├── stage_model.sh            # launches ephemeral EC2 -> hf download -> aws s3 sync -> .done -> self-terminate
 ├── delete_model.sh           # remove staged weights from S3 (--list / --all / <id> [<rev>])
 ├── wait_health.sh            # poll Temporal + vLLM /health using tf outputs
 ├── vllm_diag.sh              # SSM fan-out: user-data + vllm.log + unit state + listening ports

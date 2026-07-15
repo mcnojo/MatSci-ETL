@@ -22,3 +22,8 @@ output "vllm_weights_bucket_arn" {
   description = "Weights bucket ARN — for shared/vllm's read-scoped IAM policy."
   value       = aws_s3_bucket.vllm_weights.arn
 }
+
+output "stager_instance_profile_name" {
+  description = "Instance profile bin/stage_model.sh attaches to its ephemeral EC2 stager."
+  value       = aws_iam_instance_profile.stager.name
+}
