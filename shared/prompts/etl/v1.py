@@ -285,6 +285,10 @@ _add_page_number_to_toc_local = _add_page_number_to_toc_upstream
 # treats each entry of a References/Bibliography/SI list as its own section.
 _STRUCTURAL_RULES = """
 Structural rules:
+- Every entry MUST have a non-empty, descriptive `title`. If the source has
+  no printed header for a section, synthesize a short label (2–8 words) from
+  the section's leading content. Never emit "", " ", or a whitespace-only
+  title — the schema rejects them and the response will be discarded.
 - "References", "Bibliography", "Acknowledgments", "Supporting Information",
   "Supplementary Information", "Author contributions", and similar
   end-matter sections MUST each be a single leaf entry. Do NOT emit one
@@ -351,8 +355,11 @@ Typical top-level headers to look for (any subset, roughly in this order):
 Depth cap — STRICT: the structure index has AT MOST two dotted components.
   Allowed:   "1", "2", "2.1", "3.a"
   Forbidden: "2.1.1", "3.a.i", "1.2.3", or anything deeper.
-Deeper headings in the body are rolled up under their parent — do NOT emit
-them as their own entries. This is a high-level TOC, not a full outline.
+Deeper headings in the body are NOT emitted as their own entries — this is a
+high-level TOC, not a full outline. Instead, the parent entry (at depth 1 or
+2) covers that content: keep the parent's own body-derived header as its
+title, and let its physical_index span cover the deeper headers' pages. Do
+NOT emit placeholder entries with empty titles to "hold" deeper content.
 
 Section headers in the body are usually on their own line, in bold/larger
 font, without trailing punctuation, and introduce a new topical block.

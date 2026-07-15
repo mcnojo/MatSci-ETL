@@ -86,13 +86,13 @@ def test_merge_config_top_level_section_replaced_for_non_dict():
 
 
 def test_merge_config_dict_sections_merge_one_level():
-    base = {"tree_llm": {"model": "strong", "model_fast": "fast", "temperature": 0.0}}
+    base = {"tree_llm": {"model": "strong", "model_fast": "fast", "max_response_tokens": 8192}}
     overrides = {"tree_llm": {"model": "even-stronger"}}
     out = _merge_config(base, overrides)
     # Override replaces only the named key; siblings are preserved
     assert out["tree_llm"]["model"] == "even-stronger"
     assert out["tree_llm"]["model_fast"] == "fast"
-    assert out["tree_llm"]["temperature"] == 0.0
+    assert out["tree_llm"]["max_response_tokens"] == 8192
 
 
 def test_merge_config_new_section_added():

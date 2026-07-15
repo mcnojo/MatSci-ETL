@@ -20,10 +20,10 @@ class _FakeCallLlm:
     instructor validation.
     """
 
-    async def __call__(self, model, spec: PromptSpec, *, json_mode=False, temperature=0.0):
+    async def __call__(self, model, spec: PromptSpec, *, json_mode=False):
         return LlmResult(model=model, content="A concise summary.", finish_reason="stop")
 
-    async def parsed(self, model, spec: PromptSpec, response_schema: str, *, temperature=0.0):
+    async def parsed(self, model, spec: PromptSpec, response_schema: str):
         if response_schema == "toc_detection":
             return {"toc_detected": "no"}
         if response_schema == "page_index_present":

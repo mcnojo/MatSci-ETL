@@ -118,14 +118,13 @@ class _WorkflowCallLlm:
         self._gpu_q = gpu_q
 
     async def __call__(
-        self, model: str, spec: PromptSpec, *,
-        json_mode: bool = False, temperature: float = 0.0,
+        self, model: str, spec: PromptSpec, *, json_mode: bool = False,
     ) -> LlmResult:
         result = await workflow.execute_activity(
             llm_text_call_activity,
             LlmTextCallInput(
                 prompt_spec=spec, config_uri=self._config_uri, model=model,
-                json_mode=json_mode, temperature=temperature,
+                json_mode=json_mode,
             ),
             task_queue=self._gpu_q,
             start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
@@ -147,13 +146,12 @@ class _WorkflowCallLlm:
 
     async def parsed(
         self, model: str, spec: PromptSpec, response_schema: str,
-        *, temperature: float = 0.0,
     ) -> dict:
         result = await workflow.execute_activity(
             llm_structured_call_activity,
             LlmStructuredCallInput(
                 prompt_spec=spec, config_uri=self._config_uri, model=model,
-                response_schema=response_schema, temperature=temperature,
+                response_schema=response_schema,
             ),
             task_queue=self._gpu_q,
             start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,

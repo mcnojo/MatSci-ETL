@@ -95,7 +95,7 @@ async def llm_text_call_activity(input: LlmTextCallInput) -> LlmTextCallOutput:
     result = await await_with_heartbeats(
         execute_text_call(
             config, input.model, prompt,
-            json_mode=input.json_mode, temperature=input.temperature,
+            json_mode=input.json_mode,
         ),
     )
     return LlmTextCallOutput(
@@ -124,7 +124,6 @@ async def llm_structured_call_activity(
     result = await await_with_heartbeats(
         execute_structured_call(
             config, input.model, prompt, schema_cls,
-            temperature=input.temperature,
         ),
     )
     return LlmStructuredCallOutput(

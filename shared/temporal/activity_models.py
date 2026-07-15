@@ -33,7 +33,6 @@ class LlmTextCallInput(BaseModel):
     config_uri: str
     model: str
     json_mode: bool = False
-    temperature: float = 0.0
 
 
 class LlmTextCallOutput(BaseModel):
@@ -59,7 +58,6 @@ class LlmStructuredCallInput(BaseModel):
     config_uri: str
     model: str
     response_schema: str
-    temperature: float = 0.0
 
 
 class LlmStructuredCallOutput(BaseModel):

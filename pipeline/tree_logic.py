@@ -42,13 +42,11 @@ class CallLlm(Protocol):
     ValidationError repair inside the activity; the workflow just reads the dict.
     """
     async def __call__(
-        self, model: str, spec: PromptSpec, *,
-        json_mode: bool = False, temperature: float = 0.0,
+        self, model: str, spec: PromptSpec, *, json_mode: bool = False,
     ) -> LlmResult: ...
 
     async def parsed(
         self, model: str, spec: PromptSpec, response_schema: str,
-        *, temperature: float = 0.0,
     ) -> dict: ...
 
 

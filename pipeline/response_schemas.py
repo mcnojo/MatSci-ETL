@@ -51,10 +51,11 @@ class TocCompletion(BaseModel):
         return _yn(v)
 
 
-# maxLength propagates to the JSON schema → vLLM guided decoding enforces
-# per-token. Bounds sized for long journal titles, depth-2 structure indices,
-# and <physical_index_XXXXXXX> tags.
-_BoundedTitle = Annotated[str, StringConstraints(max_length=300)]
+# min/max propagate to JSON schema → vLLM guided decoding enforces per-token.
+# title min_length=5 admits "Intro"-length labels while rejecting empty and
+# single-token cheats. Length bounds sized for long journal titles, depth-2
+# structure indices, and <physical_index_XXXXXXX> tags.
+_BoundedTitle = Annotated[str, StringConstraints(min_length=5, max_length=300)]
 _BoundedStructure = Annotated[str, StringConstraints(max_length=16)]
 _BoundedIndex = Annotated[str, StringConstraints(max_length=32)]
 
@@ -62,8 +63,9 @@ _BoundedIndex = Annotated[str, StringConstraints(max_length=32)]
 class TocItem(BaseModel):
     # extra="forbid" → additionalProperties: false; blocks guided decoding from
     # inventing per-entry keys (primary driver of the 16K runaway).
+    # title is required — no default; forces instructor-repair on omission.
     model_config = ConfigDict(extra="forbid")
-    title: _BoundedTitle = ""
+    title: _BoundedTitle
     structure: _BoundedStructure | None = None
     physical_index: int | _BoundedIndex | None = None
     page: int | _BoundedIndex | None = None

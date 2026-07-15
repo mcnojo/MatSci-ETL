@@ -35,7 +35,7 @@ def _completion_kwargs(config: dict, model: str) -> tuple[str, dict]:
 
     Prefix maps provider → litellm route: `openai/*` hits any OpenAI-compatible
     endpoint (vLLM, OpenAI, together) via `api_base`; `anthropic/*` uses the
-    native SDK. Caller adds messages / temperature / response_format.
+    native SDK. Caller adds messages / response_format.
     """
     cfg = config["tree_llm"]
     provider = (cfg.get("provider") or "openai").lower()
@@ -98,16 +98,18 @@ def _usage(response) -> tuple[int, int]:
 
 async def execute_text_call(
     config: dict, model: str, prompt: str,
-    *, json_mode: bool = False, temperature: float = 0.0,
+    *, json_mode: bool = False,
 ) -> dict:
     """One LLM text call. Returns model/content/finish_reason + timing + token usage.
 
     `started_at` / `ended_at` are wall-clock (`time.time()`) so the workflow can
     compute the *union* of overlapping call intervals across workers —
     `perf_counter()` is process-local and would break that.
+
+    Sampling (temperature/top_p/top_k) lives in `config['tree_llm']['sampling']`
+    and is injected by `_completion_kwargs`. If unset, provider defaults apply.
     """
     litellm_model, kwargs = _completion_kwargs(config, model)
-    kwargs.setdefault("temperature", temperature)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
@@ -144,7 +146,6 @@ async def execute_text_call(
 
 async def execute_structured_call(
     config: dict, model: str, prompt: str, response_model: type[BaseModel],
-    *, temperature: float = 0.0,
 ) -> dict:
     """LLM call returning a validated Pydantic model dumped to a dict.
 
@@ -153,9 +154,10 @@ async def execute_structured_call(
     up to `_INSTRUCTOR_MAX_RETRIES` times. The dict return preserves the
     activity-boundary contract — Pydantic classes don't cross Temporal
     serialization; the workflow reads `data` by key.
+
+    Sampling comes from `config['tree_llm']['sampling']` via `_completion_kwargs`.
     """
     litellm_model, kwargs = _completion_kwargs(config, model)
-    kwargs.setdefault("temperature", temperature)
 
     # Mode picks the wire format instructor emits for schema-constrained output.
     # vLLM's OpenAI-compat frontend has no `--tool-call-parser` wired by default
