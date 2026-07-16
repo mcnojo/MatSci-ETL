@@ -1,7 +1,7 @@
 """ProcessPdfWorkflow — PDF pipeline orchestrator.
 
 Stages: load_pages -> (tree build ‖ abstract extraction) -> extract_assets ->
-chandra OCR fanout -> attach_ocr -> assign_elements -> figure-aware resummarize
+vision OCR fanout -> attach_ocr -> assign_elements -> figure-aware resummarize
 -> finalize. LLM activities reference pages + config by URI staged in load_pages.
 Abstract runs as one text-LLM call over pages 1-3 concurrent with the tree
 fanout; result is attached to tree.abstract before enrichment.
@@ -31,11 +31,11 @@ with workflow.unsafe.imports_passed_through():
         load_pages_activity,
     )
     from pipeline.gpu_activities import (
-        chandra_vision_call_activity,
         llm_structured_call_activity,
         llm_text_call_activity,
+        vision_ocr_call_activity,
     )
-    from pipeline.chandra_parser import parse as parse_chandra
+    from pipeline.vision_parser import parse as parse_vision
     from pipeline.metrics import empty_summary, finalize_summary, merge_call_record
     from pipeline.tree_logic import (
         LlmResult,
@@ -43,11 +43,11 @@ with workflow.unsafe.imports_passed_through():
         build_tree,
     )
     from shared.temporal.activity_models import (
-        ChandraCallInput,
         LlmStructuredCallInput,
         LlmTextCallInput,
         PageRangeSpec,
         PromptSpec,
+        VisionCallInput,
     )
     from shared.temporal.task_queues import (
         BATCH_CPU_TQ,
@@ -62,7 +62,6 @@ with workflow.unsafe.imports_passed_through():
         LIVE_GPU_TQ,
         WORKFLOW_EXECUTION_TIMEOUT,
     )
-    from shared.prompts.chandra import CHANDRA_OCR_LAYOUT_PROMPT
     from shared.schemas import TreeNode, VisualElement
 
     from .index_document import IndexDocumentWorkflow
@@ -254,7 +253,7 @@ class ProcessPdfWorkflow:
         ocr_targets = assets_out.ocr_targets
 
         if config["enrichment"]["run_ocr"] and ocr_targets:
-            ocr_updates = await self._enrich_ocr(ocr_targets, config, summary, gpu_q)
+            ocr_updates = await self._enrich_ocr(ocr_targets, config, summary, gpu_q, config_uri)
 
             # Workflow can't write to S3 (deterministic replay); merge runs as an activity.
             attach_out = await workflow.execute_activity(
@@ -323,6 +322,7 @@ class ProcessPdfWorkflow:
 
     async def _enrich_ocr(
         self, targets: list[OcrTarget], config: dict, summary: dict, gpu_q: str,
+        config_uri: str,
     ) -> list[OcrUpdate]:
         vision_cfg = config["vision_server"]
         ocr_model_label = f"ocr:{vision_cfg['ocr_model']}"
@@ -331,13 +331,10 @@ class ProcessPdfWorkflow:
         async def call_one(target: OcrTarget):
             try:
                 result = await workflow.execute_activity(
-                    chandra_vision_call_activity,
-                    ChandraCallInput(
-                        base_url=vision_cfg["base_url"],
-                        api_key=vision_cfg["api_key"],
-                        model=vision_cfg["ocr_model"],
+                    vision_ocr_call_activity,
+                    VisionCallInput(
+                        config_uri=config_uri,
                         image_uri=target.asset_uri,
-                        prompt=CHANDRA_OCR_LAYOUT_PROMPT,
                     ),
                     task_queue=gpu_q,
                     start_to_close_timeout=GPU_ACTIVITY_TIMEOUT,
@@ -358,7 +355,7 @@ class ProcessPdfWorkflow:
                 page_idx=target.page_idx,
                 elem_idx=target.elem_idx,
                 ocr_text=result.content,
-                ocr_parsed=parse_chandra(result.content),
+                ocr_parsed=parse_vision(result.content),
             ))
             merge_call_record(
                 summary, ocr_model_label,

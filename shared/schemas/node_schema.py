@@ -18,7 +18,7 @@ class VisualElement(BaseModel):
     asset_uri: str     # s3://… or local path; routed through shared.s3_io
     caption: Optional[str] = None
     ocr_text: Optional[str] = None
-    ocr_parsed: Optional[dict] = None  # normalized chandra output (see chandra_parser.py)
+    ocr_parsed: Optional[dict] = None  # normalized vision-OCR output (see pipeline/vision_parser.py)
     chem_entities: list[str] = Field(default_factory=list)
     structured_data: Optional[str] = None  # markdown table for tables
 

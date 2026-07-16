@@ -1,6 +1,6 @@
 """Tree enrichment: assign visual elements to their owning nodes.
 
-Per-element OCR happens via the chandra_vision_call activity orchestrated by the workflow,
+Per-element OCR happens via the vision_ocr_call activity orchestrated by the workflow,
 producing the `ocr_text` / `ocr_parsed` fields. 
 This module takes the result and grafts elements onto the DocumentTree.
 """
@@ -74,7 +74,7 @@ def assign_elements_to_tree(
                 ]))
                 elem_dict["chem_entities"] = extract_chem_entities(combined_text, seed_entities)
 
-            # Tables: extract the first <table>…</table> from chandra's layout_html
+            # Tables: extract the first <table>…</table> from the vision layout_html
             # and normalize to markdown. structured_data is retrieval-facing text,
             # so raw HTML would poison BM25 + embeddings — hence the conversion here.
             if elem_dict["element_type"] == "table":

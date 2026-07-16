@@ -5,7 +5,7 @@ Long-running service. Optimizes per-PDF latency. For bulk jobs see `prod/batch/`
 ```
 S3 live/incoming/ -> SQS -> ingestion/consumer.py -> ProcessPdfWorkflow
   cpu-task-queue  CPU activities (load_pages, extract_assets, attach_ocr, assign_elements, finalize)
-  gpu-task-queue  GPU activities (llm_text_call, chandra_vision_call)
+  gpu-task-queue  GPU activities (llm_text_call, vision_ocr_call)
 -> s3://chem-lit-artifacts/trees/<document_id>/tree.json
 ```
 

@@ -7,7 +7,7 @@ Three lanes, selected by --queues:
            must execute BEFORE the batch ASGs exist.
   cpu      ShardWorkflow + ProcessPdfWorkflow + per-PDF CPU activities.
            Polled by the batch CPU ASG only.
-  gpu      Per-PDF GPU activities (LLM + Chandra OCR). No workflows.
+  gpu      Per-PDF GPU activities (LLM + vision OCR). No workflows.
            Polled by the batch GPU ASG only.
 
 Production usage (one lane per host):

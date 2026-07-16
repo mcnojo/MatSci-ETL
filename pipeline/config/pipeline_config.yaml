@@ -28,11 +28,30 @@ tree_llm:
     top_p: 0.95
     top_k: 64
 
-# Vision server (OCR model, any OpenAI-compatible endpoint)
+# Vision server — element-crop OCR. Provider dispatch inside vision_ocr_call:
+#   chandra_vllm — datalab-to/chandra-ocr-2 on an OpenAI-compat vLLM box.
+#   openai       — GPT-4o family; prompt-elicited into the same output shape.
+#   anthropic    — Claude 4.5+ vision; routed via litellm.
+# Prompt (shared/prompts/vision) is provider-selected; parser accepts either
+# layout_html or figure_analysis output from any provider.
 vision_server:
+  provider: chandra_vllm
   base_url: "vllm-instance://chandra:8004/v1"   # resolved by shared/vllm/resolve.py (EC2 tag vllm_role_chandra=true)
   api_key: "EMPTY"                              # vLLM default
   ocr_model: "datalab-to/chandra-ocr-2"
+  max_response_tokens: 8192
+
+## Lab-model swap (uncomment ONE block; keep tree_llm on the same lane to avoid mixed motif)
+# vision_server:
+#   provider: openai
+#   ocr_model: "gpt-4o"
+#   api_key_env: "OPENAI_API_KEY"
+#   max_response_tokens: 4096
+# vision_server:
+#   provider: anthropic
+#   ocr_model: "claude-sonnet-4-5"
+#   api_key_env: "ANTHROPIC_API_KEY"
+#   max_response_tokens: 4096
 
 # Tree building
 tree:

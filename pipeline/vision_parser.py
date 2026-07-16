@@ -1,13 +1,13 @@
-"""Normalize chandra-ocr-2 outputs into a structured JSON envelope.
+"""Normalize vision-OCR outputs into a structured JSON envelope.
 
-Chandra emits one of two modes based on image content:
-  - layout_html: <div data-bbox=... data-label=...>...</div> blocks, possibly containing
-                 <math>, <chem>, <p>, <b>, tables, etc.
+Two output shapes accepted (chandra emits either based on content; lab models
+are prompted for the same shapes — see shared/prompts/vision):
+  - layout_html:     <div data-bbox=... data-label=...>...</div> blocks with
+                     optional <math>, <chem>, <p>, <b>, tables, etc.
   - figure_analysis: <analyze>[{titles,x_labels,y_labels,x_ticks,y_ticks,legends,series}, ...]</analyze>
-                     optionally followed by a [[{x,y,x2,y2}, ...]] coordinate blob (always junk).
+                     (chandra may trail a coordinate blob — always junk; ignored.)
 
-`parse(content)` returns a dict suitable for storing on VisualElement.ocr_parsed,
-or None if content is empty.
+`parse(content)` → dict suitable for VisualElement.ocr_parsed, or None if empty.
 """
 
 

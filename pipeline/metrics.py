@@ -1,6 +1,6 @@
 """Pipeline run metrics — workflow-side aggregation only.
 
-Per-call activities (`llm_text_call_activity`, `chandra_vision_call_activity`)
+Per-call activities (`llm_text_call_activity`, `vision_ocr_call_activity`)
 return `started_at` and `ended_at` Unix timestamps. The workflow's call_llm
 closure (`prod/workflows/process_pdf.py`) records each interval via
 `merge_call_record`. Before the workflow returns its output, it calls

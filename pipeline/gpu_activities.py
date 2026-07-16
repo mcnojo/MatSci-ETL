@@ -4,7 +4,6 @@ Lives apart so the batch GPU ASG (GPU lane only, no workflow registration)
 installs bare `pip install .` and skips the ~3-4 GB pipeline-cpu extra.
 """
 
-import base64
 import io
 import json
 import time
@@ -17,8 +16,6 @@ from temporalio import activity
 from shared.prompts.etl import get_prompt
 from shared.s3_io import get_bytes, put_bytes
 from shared.temporal.activity_models import (
-    ChandraCallInput,
-    ChandraCallOutput,
     EmbedChunksInput,
     EmbedChunksOutput,
     LlmStructuredCallInput,
@@ -26,6 +23,8 @@ from shared.temporal.activity_models import (
     LlmTextCallInput,
     LlmTextCallOutput,
     PromptSpec,
+    VisionCallInput,
+    VisionCallOutput,
 )
 from shared.vllm.resolve import resolve_vllm_url
 
@@ -33,6 +32,7 @@ from .heartbeat import await_with_heartbeats
 from .llm_calls import execute_structured_call, execute_text_call
 from .page_assembly import assemble_page_text
 from .response_schemas import resolve_schema
+from .vision_calls import execute_vision_call
 
 
 # Bounded LRU — workers are long-lived and accumulate runs.
@@ -71,10 +71,6 @@ def _render_prompt(spec: PromptSpec) -> str:
         for name, page_spec in spec.page_kwargs.items():
             kwargs[name] = assemble_page_text(pages, page_spec)
     return get_prompt(spec.name, spec.style, **kwargs)
-
-
-def _image_uri_to_b64(image_uri: str) -> str:
-    return base64.b64encode(get_bytes(image_uri)).decode("utf-8")
 
 
 def _openai_usage(response) -> tuple[int, int]:
@@ -136,38 +132,23 @@ async def llm_structured_call_activity(
     )
 
 
-@activity.defn(name="process-pdf_chandra-vision-call")
-async def chandra_vision_call_activity(input: ChandraCallInput) -> ChandraCallOutput:
+@activity.defn(name="process-pdf_vision-ocr-call")
+async def vision_ocr_call_activity(input: VisionCallInput) -> VisionCallOutput:
+    """One vision-OCR call on an element crop. Provider (chandra_vllm|openai|
+    anthropic) and prompt are resolved from `config['vision_server']`.
+    """
     activity.heartbeat()
-    # Resolve at boundary so OCR_VLLM_PREFER_PRIVATE_IP routes in-VPC over private IPs.
-    base_url = resolve_vllm_url(input.base_url)
-    b64 = _image_uri_to_b64(input.image_uri)
-    client = AsyncOpenAI(base_url=base_url, api_key=input.api_key)
-    started_at = time.time()
-    response = await await_with_heartbeats(
-        client.chat.completions.create(
-            model=input.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                        {"type": "text", "text": input.prompt},
-                    ],
-                },
-            ],
-            max_tokens=input.max_tokens,
-            temperature=0.0,
-        ),
+    config = _cache_get_or_load(_config_cache, input.config_uri, _load_config)
+    result = await await_with_heartbeats(
+        execute_vision_call(config, input.image_uri),
     )
-    ended_at = time.time()
-    in_t, out_t = _openai_usage(response)
-    return ChandraCallOutput(
-        content=response.choices[0].message.content or "",
-        started_at=started_at,
-        ended_at=ended_at,
-        input_tokens=in_t,
-        output_tokens=out_t,
+    return VisionCallOutput(
+        model=result["model"],
+        content=result["content"],
+        started_at=result["started_at"],
+        ended_at=result["ended_at"],
+        input_tokens=result["input_tokens"],
+        output_tokens=result["output_tokens"],
     )
 
 
@@ -244,6 +225,6 @@ async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
 GPU_ACTIVITIES = [
     llm_text_call_activity,
     llm_structured_call_activity,
-    chandra_vision_call_activity,
+    vision_ocr_call_activity,
     embed_chunks_activity,
 ]

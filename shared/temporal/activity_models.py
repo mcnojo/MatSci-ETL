@@ -73,20 +73,19 @@ class LlmStructuredCallOutput(BaseModel):
     output_tokens: int
 
 
-class ChandraCallInput(BaseModel):
+class VisionCallInput(BaseModel):
+    # Provider (chandra_vllm|openai|anthropic), model, prompt, and token cap
+    # are read from config['vision_server'] inside the activity.
     model_config = ConfigDict(frozen=True)
 
-    base_url: str
-    api_key: str
-    model: str
+    config_uri: str
     image_uri: str
-    prompt: str
-    max_tokens: int = 4096
 
 
-class ChandraCallOutput(BaseModel):
+class VisionCallOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    model: str
     content: str
     started_at: float
     ended_at: float
