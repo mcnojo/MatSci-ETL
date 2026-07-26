@@ -238,6 +238,9 @@ vllm/aws/instances/
 pipeline/kb/*
 pipeline/logs/*
 docs/
+
+# Local run reports written by pipeline.cli — one JSON per workflow.
+/logs/
 .DS_Store
 test_hard/
 

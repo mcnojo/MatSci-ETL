@@ -39,6 +39,15 @@ from shared.temporal.client import connect_temporal
 from shared.temporal.operator_address import resolve_operator_address
 from shared.temporal.task_queues import LIVE_CPU_TQ, WORKFLOW_EXECUTION_TIMEOUT
 
+from .run_report import (
+    build_index_record,
+    build_process_record,
+    render_index,
+    render_process,
+    utc_iso,
+    write_record,
+)
+
 console = Console()
 _DEFAULT_CONFIG = "pipeline/config/pipeline_config.yaml"
 
@@ -66,6 +75,7 @@ def _resolve_temporal_address(flag_value: str | None) -> str:
 async def _run_process(
     pdf_paths: list[Path],
     config: dict,
+    config_path: str,
     skip_enrichment: bool,
     temporal_address: str,
 ) -> None:
@@ -73,6 +83,8 @@ async def _run_process(
     console.print(f"Connected to Temporal at [bold]{temporal_address}[/bold]")
 
     t0 = time.perf_counter()
+    tree_llm_model = (config.get("tree_llm") or {}).get("model")
+    vision_ocr_model = (config.get("vision_server") or {}).get("ocr_model")
     handles = []
 
     for pdf_path in pdf_paths:
@@ -80,6 +92,7 @@ async def _run_process(
         run_id = str(uuid.uuid4())
         workflow_id = f"process-pdf-{document_id}-{run_id}"
 
+        started_iso = utc_iso()
         handle = await client.start_workflow(
             ProcessPdfWorkflow.run,
             ProcessPdfWorkflowInput(
@@ -94,19 +107,40 @@ async def _run_process(
             execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
         )
         console.print(f"  Started [cyan]{document_id}[/cyan] -> {workflow_id}")
-        handles.append((document_id, handle))
+        handles.append((document_id, workflow_id, str(pdf_path), started_iso, handle))
 
     errors: list[str] = []
-    for document_id, handle in handles:
+    for document_id, workflow_id, pdf_path_str, started_iso, handle in handles:
+        result: ProcessPdfWorkflowOutput | None = None
+        error: str | None = None
         try:
-            result: ProcessPdfWorkflowOutput = await handle.result()
+            result = await handle.result()
             console.print(
                 f"  [green]done[/green] {document_id}: "
                 f"{result.node_count} nodes, {result.total_pages} pages -> {result.tree_path}"
             )
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
             errors.append(f"{document_id}: {exc}")
             console.print(f"  [red]fail[/red] {document_id}: {exc}")
+
+        record = build_process_record(
+            document_id=document_id,
+            workflow_id=workflow_id,
+            pdf_path=pdf_path_str,
+            config_path=config_path,
+            temporal_address=temporal_address,
+            started_at_iso=started_iso,
+            ended_at_iso=utc_iso(),
+            tree_llm_model=tree_llm_model,
+            vision_ocr_model=vision_ocr_model,
+            output=result,
+            error=error,
+        )
+        log_path = write_record(record)
+        if result is not None:
+            render_process(console, record)
+        console.print(f"  [dim]log: {log_path}[/dim]")
 
     elapsed = time.perf_counter() - t0
     console.print(f"\n{len(handles)} PDFs in {elapsed:.1f}s, {len(errors)} errors")
@@ -129,6 +163,7 @@ def _derive_document_id(tree_uri: str) -> str:
 async def _run_index(
     tree_uris: list[str],
     config: dict,
+    config_path: str,
     index_name: str | None,
     temporal_address: str,
 ) -> None:
@@ -136,13 +171,15 @@ async def _run_index(
     console.print(f"Connected to Temporal at [bold]{temporal_address}[/bold]")
 
     t0 = time.perf_counter()
-    handles: list[tuple[str, object]] = []
+    embedding_model = (config.get("embedding_server") or {}).get("model")
+    handles: list[tuple[str, str, str, str, object]] = []
 
     for tree_uri in tree_uris:
         document_id = _derive_document_id(tree_uri)
         run_id = str(uuid.uuid4())
         workflow_id = f"index-document-{document_id}-{run_id}"
 
+        started_iso = utc_iso()
         handle = await client.start_workflow(
             IndexDocumentWorkflow.run,
             IndexDocumentWorkflowInput(
@@ -157,20 +194,40 @@ async def _run_index(
             execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
         )
         console.print(f"  Started [cyan]{document_id}[/cyan] -> {workflow_id}")
-        handles.append((document_id, handle))
+        handles.append((document_id, workflow_id, tree_uri, started_iso, handle))
 
     errors: list[str] = []
-    for document_id, handle in handles:
+    for document_id, workflow_id, tree_uri, started_iso, handle in handles:
+        result: IndexDocumentWorkflowOutput | None = None
+        error: str | None = None
         try:
-            result: IndexDocumentWorkflowOutput = await handle.result()
+            result = await handle.result()
             console.print(
                 f"  [green]done[/green] {document_id}: {result.chunk_count} chunks "
                 f"({result.total_tokens} tokens) -> {result.index_name} "
                 f"[{result.indexed_count} indexed]"
             )
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
             errors.append(f"{document_id}: {exc}")
             console.print(f"  [red]fail[/red] {document_id}: {exc}")
+
+        record = build_index_record(
+            document_id=document_id,
+            workflow_id=workflow_id,
+            tree_uri=tree_uri,
+            config_path=config_path,
+            temporal_address=temporal_address,
+            started_at_iso=started_iso,
+            ended_at_iso=utc_iso(),
+            embedding_model=embedding_model,
+            output=result,
+            error=error,
+        )
+        log_path = write_record(record)
+        if result is not None:
+            render_index(console, record)
+        console.print(f"  [dim]log: {log_path}[/dim]")
 
     elapsed = time.perf_counter() - t0
     console.print(f"\n{len(handles)} documents in {elapsed:.1f}s, {len(errors)} errors")
@@ -217,7 +274,7 @@ def process_cmd(pdf, pdf_dir, config_path, skip_enrichment, temporal_address, ve
         sys.exit(1)
 
     address = _resolve_temporal_address(temporal_address)
-    asyncio.run(_run_process(pdfs, config, skip_enrichment, address))
+    asyncio.run(_run_process(pdfs, config, config_path, skip_enrichment, address))
 
 
 @cli.command("index")
@@ -264,7 +321,7 @@ def index_cmd(tree_uri, tree_dir, manifest_path, index_name, config_path,
         sys.exit(1)
 
     address = _resolve_temporal_address(temporal_address)
-    asyncio.run(_run_index(uris, config, index_name, address))
+    asyncio.run(_run_index(uris, config, config_path, index_name, address))
 
 
 if __name__ == "__main__":
