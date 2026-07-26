@@ -24,11 +24,8 @@ ingestion:
 pipeline_overrides:
   output:
     save_page_images: false         # skip full-page renders on scale runs
-  # OpenSearch isn't provisioned yet
-  # Guards live at prod/batch/workflows/batch_run.py:341 and
-  # prod/live/workflows/process_pdf.py:541.
   retrieval:
-    index_enabled: false
+    index_enabled: true             # Qdrant Cloud is the store; auto-index tail runs after OCR
 
 # EC2 instance tags (informational; not read by code — the actual instance
 # types live in shared/vllm/terraform/variables.tf var.models).

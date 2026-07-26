@@ -2,13 +2,13 @@
 
 Subcommands:
     process   — ProcessPdfWorkflow: PDF -> DocumentTree (existing route)
-    index     — IndexDocumentWorkflow: tree -> chunks -> BM25 + dense vectors
+    index     — IndexDocumentWorkflow: tree -> chunks -> Qdrant (dense + BM25 sparse)
 
 Usage:
     python -m pipeline.cli process --pdf paper.pdf
     python -m pipeline.cli process --pdf-dir papers/ --skip-enrichment
     python -m pipeline.cli index --tree-uri s3://bucket/trees/foo/tree.json
-    python -m pipeline.cli index --tree-dir trees/ --index-name chem-lit-v1
+    python -m pipeline.cli index --tree-dir trees/ --collection-name chem-lit-v1
     python -m pipeline.cli process --pdf paper.pdf --temporal-address 10.0.1.5:7233
 
 Temporal address resolution (any subcommand): --temporal-address wins; else
@@ -164,7 +164,7 @@ async def _run_index(
     tree_uris: list[str],
     config: dict,
     config_path: str,
-    index_name: str | None,
+    collection_name: str | None,
     temporal_address: str,
 ) -> None:
     client = await connect_temporal(temporal_address)
@@ -187,7 +187,7 @@ async def _run_index(
                 run_id=run_id,
                 tree_uri=tree_uri,
                 config=config,
-                index_name=index_name,
+                collection_name=collection_name,
             ),
             id=workflow_id,
             task_queue=LIVE_CPU_TQ,
@@ -204,7 +204,7 @@ async def _run_index(
             result = await handle.result()
             console.print(
                 f"  [green]done[/green] {document_id}: {result.chunk_count} chunks "
-                f"({result.total_tokens} tokens) -> {result.index_name} "
+                f"({result.total_tokens} tokens) -> {result.collection_name} "
                 f"[{result.indexed_count} indexed]"
             )
         except Exception as exc:
@@ -287,17 +287,17 @@ def process_cmd(pdf, pdf_dir, config_path, skip_enrichment, temporal_address, ve
               help='JSON file: [{"document_id": "...", "tree_uri": "..."}]. '
                    'Alternative to --tree-uri/--tree-dir when trees are in '
                    'non-conventional locations.')
-@click.option("--index-name", default=None,
-              help="OpenSearch index name; falls back to "
-                   "retrieval.opensearch.index_name in config.")
+@click.option("--collection-name", default=None,
+              help="Qdrant collection name; falls back to "
+                   "retrieval.qdrant.collection_name in config.")
 @click.option("--config", "config_path", default=_DEFAULT_CONFIG, show_default=True)
 @click.option("--temporal-address", default=None,
               help="Temporal gRPC endpoint. Falls back to TEMPORAL_ADDRESS env "
                    "then to shared/temporal terraform output.")
 @click.option("-v", "--verbose", is_flag=True, default=False)
-def index_cmd(tree_uri, tree_dir, manifest_path, index_name, config_path,
+def index_cmd(tree_uri, tree_dir, manifest_path, collection_name, config_path,
               temporal_address, verbose):
-    """Run IndexDocumentWorkflow: tree -> chunks -> BM25 + dense index."""
+    """Run IndexDocumentWorkflow: tree -> chunks -> Qdrant (dense + BM25 sparse)."""
     _setup_logging(verbose)
     config = load_pipeline_config(config_path)
 
@@ -321,7 +321,7 @@ def index_cmd(tree_uri, tree_dir, manifest_path, index_name, config_path,
         sys.exit(1)
 
     address = _resolve_temporal_address(temporal_address)
-    asyncio.run(_run_index(uris, config, config_path, index_name, address))
+    asyncio.run(_run_index(uris, config, config_path, collection_name, address))
 
 
 if __name__ == "__main__":

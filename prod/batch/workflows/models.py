@@ -123,7 +123,7 @@ class IndexItemResult(BaseModel):
     tree_uri: str
     status: Literal["success", "failure"]
     workflow_id: str
-    index_name: Optional[str] = None
+    collection_name: Optional[str] = None
     chunk_count: Optional[int] = None
     embedded_count: Optional[int] = None
     indexed_count: Optional[int] = None

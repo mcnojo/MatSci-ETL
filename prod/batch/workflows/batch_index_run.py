@@ -318,7 +318,7 @@ def _per_item_row(r: IndexItemResult) -> dict:
         "tree_uri": r.tree_uri,
         "status": r.status,
         "workflow_id": r.workflow_id,
-        "index_name": r.index_name or "",
+        "collection_name": r.collection_name or "",
         "chunk_count": r.chunk_count if r.chunk_count is not None else "",
         "embedded_count": r.embedded_count if r.embedded_count is not None else "",
         "indexed_count": r.indexed_count if r.indexed_count is not None else "",

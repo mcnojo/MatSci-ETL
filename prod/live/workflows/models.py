@@ -35,7 +35,7 @@ class IndexDocumentWorkflowInput(BaseModel):
     run_id: str
     tree_uri: str               # local path or s3:// URI to finalized tree.json
     config: dict                # full pipeline config (must include retrieval.* + embedding_server.*)
-    index_name: str | None = None  # overrides retrieval.opensearch.index_name
+    collection_name: str | None = None  # overrides retrieval.qdrant.collection_name
 
 
 class IndexDocumentWorkflowOutput(BaseModel):
@@ -43,7 +43,7 @@ class IndexDocumentWorkflowOutput(BaseModel):
 
     document_id: str
     run_id: str
-    index_name: str
+    collection_name: str
     chunk_count: int
     embedded_count: int
     indexed_count: int

@@ -404,9 +404,8 @@ async def finalize_activity(input: FinalizeInput) -> FinalizeOutput:
 
 def _index_artifact_uri(config: dict, document_id: str, leaf: str) -> str:
     """Deterministic per-paper index artifact URI. run_id is deliberately absent:
-    the user wants one canonical version per paper at rest, so a re-run
-    overwrites in place. Prior versions are wiped from OpenSearch by
-    wipe_paper in index_chunks_activity."""
+    one canonical version per paper at rest, so a re-run overwrites in place.
+    Prior versions are wiped from Qdrant by wipe_paper in index_chunks_activity."""
     prefix = config["output"]["assets_uri_prefix"].rstrip("/")
     return f"{prefix}/{document_id}/index/{leaf}"
 
@@ -468,56 +467,58 @@ async def chunk_document_activity(input: ChunkDocumentInput) -> ChunkDocumentOut
 
 @activity.defn(name="index-document_index-chunks")
 async def index_chunks_activity(input: IndexChunksInput) -> IndexChunksOutput:
-    """Read chunks + embeddings from S3, wipe the paper's prior slot in
-    OpenSearch, then bulk-index the fresh chunks.
-
-    Aggressive-overwrite semantics: the caller (workflow) owns exactly one
-    version per paper. wipe_paper drops any lingering doc_id under this
-    paper_id BEFORE the fresh write lands, so a re-run with a different
-    chunker output can't leave orphans behind.
+    """Load chunks + dense .npy from S3, compute BM25 sparse locally, wipe the
+    paper's prior points, upsert. Deterministic UUIDv5 point IDs make retries
+    idempotent; wipe_paper handles the shrunk-output edge (fewer chunks on
+    re-run) that pure upserts would leak.
     """
     activity.heartbeat()
 
-    def _run() -> int:
-        from shared.opensearch import (
-            build_client, bulk_index_chunks, ensure_index, wipe_paper,
-        )
+    from shared.qdrant import (
+        build_client, bulk_index_chunks, encode_bm25, ensure_collection, wipe_paper,
+    )
 
+    def _load_and_encode() -> tuple[list[dict], np.ndarray, list]:
         chunks_raw = json.loads(get_bytes(input.chunks_uri).decode("utf-8"))
-        # embeddings.npy: fp16 array, shape (N, dim), positionally aligned with
-        # chunks. np.load reconstructs shape + dtype from the .npy header;
-        # allow_pickle=False keeps this to plain arrays only. Upcast to fp32
-        # for OpenSearch — the knn_vector field stores float32 regardless.
+        # embeddings.npy: fp16 (N, dim), positionally aligned with chunks. Upcast
+        # to fp32 for the wire — Qdrant stores dense as fp32 regardless.
         emb_arr = np.load(io.BytesIO(get_bytes(input.embeddings_uri)), allow_pickle=False)
         if emb_arr.ndim != 2:
-            raise RuntimeError(
-                f"embeddings array must be 2-D (N, dim); got shape {emb_arr.shape}"
-            )
+            raise RuntimeError(f"embeddings must be 2-D (N, dim); got {emb_arr.shape}")
         if len(chunks_raw) != emb_arr.shape[0]:
             raise RuntimeError(
                 f"chunks/embeddings length mismatch: {len(chunks_raw)} vs {emb_arr.shape[0]}"
             )
         emb_arr = emb_arr.astype(np.float32, copy=False)
-
         dim = int(input.config["embedding_server"]["dimension"])
         if emb_arr.shape[1] != dim:
             raise RuntimeError(
-                f"embedding_server.dimension={dim} but stored vectors are "
-                f"{emb_arr.shape[1]}-dim; index_name rotation required"
+                f"embedding_server.dimension={dim} vs stored {emb_arr.shape[1]}-d; "
+                "collection_name rotation required"
             )
+        sparse = encode_bm25([c["text"] for c in chunks_raw]) if chunks_raw else []
+        return chunks_raw, emb_arr, sparse
 
-        chunks = [
-            Chunk.model_validate({**c, "embedding": emb_arr[i].tolist()})
-            for i, c in enumerate(chunks_raw)
-        ]
+    chunks_raw, emb_arr, sparse_vecs = await await_with_heartbeats(
+        asyncio.to_thread(_load_and_encode),
+    )
+    chunks = [Chunk.model_validate(c) for c in chunks_raw]
+    dense_vecs = emb_arr.tolist()
 
-        client = build_client(input.config)
-        ensure_index(client, input.index_name, embedding_dim=dim)
-        wipe_paper(client, input.index_name, input.paper_id)
-        return bulk_index_chunks(client, input.index_name, chunks)
-
-    indexed = await await_with_heartbeats(asyncio.to_thread(_run))
-    return IndexChunksOutput(indexed_count=indexed, index_name=input.index_name)
+    client = build_client(input.config)
+    try:
+        await ensure_collection(
+            client, input.collection_name, embedding_dim=emb_arr.shape[1],
+        )
+        await wipe_paper(client, input.collection_name, input.paper_id)
+        indexed = await bulk_index_chunks(
+            client, input.collection_name, chunks, dense_vecs, sparse_vecs,
+        )
+    finally:
+        await client.close()
+    return IndexChunksOutput(
+        indexed_count=indexed, collection_name=input.collection_name,
+    )
 
 
 # Registered with workers that poll the CPU lane (BATCH_CPU_TQ / LIVE_CPU_TQ).

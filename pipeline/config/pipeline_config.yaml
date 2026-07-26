@@ -114,29 +114,25 @@ embedding_server:
   dimension: 1024
   batch_size: 64
 
-# Indexing — BM25 + dense chunk store (OpenSearch write-side).
+# Indexing — dense + BM25-sparse chunk store on Qdrant Cloud.
 # This repo owns the WRITE path only; retrieval belongs to the downstream
 # agent (see docs/vector-and-bm25-access.md).
 #
-# `index_enabled` toggles whether OCR runs automatically chain into
-# chunk+embed+index. Live: gates the tail of ProcessPdfWorkflow. Batch: gates
-# the tail of BatchRunWorkflow. Set false to run OCR alone and re-index later
-# via `python -m prod.batch.cli submit-index` (batch) or `python -m pipeline.cli
-# index <tree_uri>` (live).
+# `index_enabled` gates the auto-index tail after OCR (ProcessPdfWorkflow /
+# BatchRunWorkflow). Set false to run OCR alone; re-index later via
+# `python -m prod.batch.cli submit-index` (batch) or
+# `python -m pipeline.cli index <tree_uri>` (live).
 #
-# `auth: basic` reads user/password from the env vars named below. Switch to
-# `auth: aws_sigv4` (and add `region`) for Amazon OpenSearch Service.
-# Rotate index_name when swapping embedding_server.model — dimension is baked
-# into the mapping and can't be mutated in place.
+# URL + API key resolve from the env vars named below (worker bootstrap
+# materializes them from SSM SecureString). Rotate collection_name when
+# swapping embedding_server.model — vector dim is baked at collection create.
 retrieval:
   index_enabled: true
-  opensearch:
-    endpoint: "https://opensearch.internal:9200"
-    auth: "basic"
-    user_env: "OPENSEARCH_USER"
-    password_env: "OPENSEARCH_PASSWORD"
-    verify_certs: false
-    index_name: "chem-lit-chunks-v1"
+  qdrant:
+    url_env: "QDRANT_URL"
+    api_key_env: "QDRANT_API_KEY"
+    collection_name: "chem-lit-chunks-v1"
+    prefer_grpc: false                    # HTTP works on every Cloud tier
   chunking:
     max_tokens: 512
     overlap_tokens: 64

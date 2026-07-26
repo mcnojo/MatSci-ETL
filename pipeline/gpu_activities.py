@@ -163,8 +163,8 @@ async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
     Format: numpy .npy, dtype float16, shape (N, dim). ~4-8× smaller than the
     JSON list-of-lists that preceded it (JSON floats are ~15 chars each);
     parse is ~10× faster on the read side. fp16 cosine drift on bge-m3 is
-    empirically negligible (well under kNN retrieval noise), and OpenSearch
-    upcasts to fp32 on ingest anyway.
+    empirically negligible (well under kNN retrieval noise); the index
+    activity upcasts to fp32 before upserting.
     """
     activity.heartbeat()
 
@@ -193,7 +193,7 @@ async def embed_chunks_activity(input: EmbedChunksInput) -> EmbedChunksOutput:
             if len(vec) != dim:
                 raise RuntimeError(
                     f"embedding_server.dimension={dim} but model returned "
-                    f"{len(vec)}-dim vectors; rotate index_name and update config"
+                    f"{len(vec)}-dim vectors; rotate collection_name and update config"
                 )
             embeddings.append(list(vec))
 

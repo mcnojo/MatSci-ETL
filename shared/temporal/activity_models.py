@@ -146,11 +146,11 @@ class IndexChunksInput(BaseModel):
     paper_id: str             # wipe_paper target — pre-write cleanup of prior chunks
     chunks_uri: str
     embeddings_uri: str
-    index_name: str
+    collection_name: str
     config: dict
 
 
 class IndexChunksOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
     indexed_count: int
-    index_name: str
+    collection_name: str

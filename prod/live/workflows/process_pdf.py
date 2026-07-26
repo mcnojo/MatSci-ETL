@@ -506,8 +506,8 @@ class ProcessPdfWorkflow:
         )
         finalize_summary(summary)
 
-        # Optional tail: chunk + embed + BM25/kNN index into OpenSearch. Toggle
-        # via config.retrieval.index_enabled; runs as a child so its history is
+        # Optional tail: chunk + embed + hybrid-index into Qdrant. Toggle via
+        # config.retrieval.index_enabled; runs as a child so its history is
         # decoupled and Temporal-UI can inspect it independently. Failure of
         # the child fails the parent — a re-run picks up from the finalized
         # tree via `pipeline.cli index <tree_uri>` if needed.
@@ -548,7 +548,7 @@ class ProcessPdfWorkflow:
             execution_timeout=WORKFLOW_EXECUTION_TIMEOUT,
         )
         return {
-            "index_name": index_out.index_name,
+            "collection_name": index_out.collection_name,
             "chunk_count": index_out.chunk_count,
             "embedded_count": index_out.embedded_count,
             "indexed_count": index_out.indexed_count,

@@ -1,9 +1,9 @@
-"""IndexDocumentWorkflow — chunk + embed + BM25/dense-index a finalized tree.
+"""IndexDocumentWorkflow — chunk + embed + hybrid-index a finalized tree.
 
 Consumes a completed `tree.json` URI (produced by ProcessPdfWorkflow) and
-publishes chunks + embeddings to OpenSearch. Deliberately decoupled from
+upserts chunks + dense/sparse vectors into Qdrant. Decoupled from
 ProcessPdfWorkflow so re-indexing (embedding-model swap, chunker tuning,
-index recreation) doesn't require re-running OCR.
+collection recreation) doesn't require re-running OCR.
 
 Stages: load_tree -> load_pages -> chunk -> embed -> index. The chunker and
 embedder both re-read source artifacts through S3; nothing large crosses
@@ -59,22 +59,22 @@ _GPU_SIBLING = {
 }
 
 
-def _resolve_index_name(input: IndexDocumentWorkflowInput) -> str:
-    if input.index_name:
-        return input.index_name
+def _resolve_collection_name(input: IndexDocumentWorkflowInput) -> str:
+    if input.collection_name:
+        return input.collection_name
     try:
-        return input.config["retrieval"]["opensearch"]["index_name"]
+        return input.config["retrieval"]["qdrant"]["collection_name"]
     except KeyError as e:
         raise ValueError(
-            f"IndexDocumentWorkflow needs retrieval.opensearch.index_name in "
-            f"config, or index_name in the workflow input; missing {e}"
+            f"IndexDocumentWorkflow needs retrieval.qdrant.collection_name in "
+            f"config, or collection_name in the workflow input; missing {e}"
         )
 
 
 def _embeddings_uri(config: dict, document_id: str) -> str:
     """One canonical embeddings URI per paper — mirrors _index_artifact_uri in
     pipeline.cpu_activities. Re-runs overwrite in place; wipe_paper in
-    index_chunks_activity clears the OpenSearch side.
+    index_chunks_activity clears the Qdrant side.
 
     .npy = fp16 numpy array, shape (N, dim), positionally aligned with
     chunks.json. ~4-8× smaller than the JSON list-of-lists that preceded it.
@@ -87,15 +87,16 @@ def _embeddings_uri(config: dict, document_id: str) -> str:
 class IndexDocumentWorkflow:
     """Chunk -> embed -> index one document.
 
-    Idempotent per (document_id, index_name): chunk doc_ids are deterministic
-    and the writer uses them as OpenSearch _id, so re-runs overwrite in place.
+    Idempotent per (document_id, collection_name): chunk doc_ids are
+    deterministic and the writer derives Qdrant point IDs as uuid5(doc_id),
+    so re-runs overwrite in place.
     """
 
     @workflow.run
     async def run(self, input: IndexDocumentWorkflowInput) -> IndexDocumentWorkflowOutput:
         cpu_q = workflow.info().task_queue
         gpu_q = _GPU_SIBLING.get(cpu_q, cpu_q)
-        index_name = _resolve_index_name(input)
+        collection_name = _resolve_collection_name(input)
 
         tree_meta: LoadTreeOutput = await workflow.execute_activity(
             load_tree_activity,
@@ -157,7 +158,7 @@ class IndexDocumentWorkflow:
                 paper_id=tree_meta.paper_id,
                 chunks_uri=chunked.chunks_uri,
                 embeddings_uri=embedded.embeddings_uri,
-                index_name=index_name,
+                collection_name=collection_name,
                 config=input.config,
             ),
             task_queue=cpu_q,
@@ -169,7 +170,7 @@ class IndexDocumentWorkflow:
         return IndexDocumentWorkflowOutput(
             document_id=input.document_id,
             run_id=input.run_id,
-            index_name=indexed.index_name,
+            collection_name=indexed.collection_name,
             chunk_count=chunked.chunk_count,
             embedded_count=embedded.embedded_count,
             indexed_count=indexed.indexed_count,

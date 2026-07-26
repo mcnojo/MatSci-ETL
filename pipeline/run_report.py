@@ -130,7 +130,7 @@ def build_index_record(
         "status": "ok" if output else "error",
         "error": error,
         "result": None if output is None else {
-            "index_name": output.index_name,
+            "collection_name": output.collection_name,
             "chunk_count": output.chunk_count,
             "embedded_count": output.embedded_count,
             "indexed_count": output.indexed_count,
@@ -184,7 +184,7 @@ def render_process(console: Console, record: dict) -> None:
 def render_index(console: Console, record: dict) -> None:
     r = record.get("result") or {}
     console.print(
-        f"  index={r.get('index_name')}  chunks={r.get('chunk_count')}  "
+        f"  collection={r.get('collection_name')}  chunks={r.get('chunk_count')}  "
         f"embedded={r.get('embedded_count')}  indexed={r.get('indexed_count')}  "
         f"tokens={r.get('total_tokens')}"
     )

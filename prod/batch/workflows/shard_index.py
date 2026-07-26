@@ -67,7 +67,7 @@ class ShardIndexWorkflow:
                         tree_uri=item.tree_uri,
                         status="success",
                         workflow_id=child_id,
-                        index_name=out.index_name,
+                        collection_name=out.collection_name,
                         chunk_count=out.chunk_count,
                         embedded_count=out.embedded_count,
                         indexed_count=out.indexed_count,
