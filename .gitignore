@@ -266,3 +266,4 @@ infra/terraform/batch/.terraform.lock.hcl
 ether_papers
 trees/*
 benchmark_annotations/
+.claude/
