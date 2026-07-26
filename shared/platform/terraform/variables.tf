@@ -15,3 +15,9 @@ variable "tree_llm_ssm_prefix" {
   type        = string
   default     = "/ocr-bench/tree_llm"
 }
+
+variable "qdrant_ssm_prefix" {
+  description = "SSM parameter prefix for Qdrant Cloud endpoint + API key. Must match downstream consumer vars of the same name."
+  type        = string
+  default     = "/ocr-bench/qdrant"
+}

@@ -76,6 +76,12 @@ variable "tree_llm_ssm_prefix" {
   default     = "/ocr-bench/tree_llm"
 }
 
+variable "qdrant_ssm_prefix" {
+  description = "SSM parameter prefix for Qdrant Cloud URL + API key (slots owned by shared/platform). cpu-pipeline-01 fetches on boot into /etc/ocr-benchmarking/tree_llm.env."
+  type        = string
+  default     = "/ocr-bench/qdrant"
+}
+
 variable "live_ssm_prefix" {
   description = "SSM parameter prefix the live motif uses to hand the SQS queue URL off to cpu-pipeline-01. Authoritative — live/ reads this via remote_state."
   type        = string

@@ -34,3 +34,28 @@ resource "aws_ssm_parameter" "openai_api_key" {
     prevent_destroy = true
   }
 }
+
+# Same operator-populated pattern as the tree_llm slots above.
+resource "aws_ssm_parameter" "qdrant_url" {
+  name        = "${var.qdrant_ssm_prefix}/url"
+  description = "Qdrant Cloud HTTPS endpoint. Populate via `aws ssm put-parameter --overwrite`."
+  type        = "SecureString"
+  value       = "PLACEHOLDER_OPERATOR_OVERWRITES"
+
+  lifecycle {
+    ignore_changes  = [value]
+    prevent_destroy = true
+  }
+}
+
+resource "aws_ssm_parameter" "qdrant_api_key" {
+  name        = "${var.qdrant_ssm_prefix}/api_key"
+  description = "Qdrant Cloud API key. Populate via `aws ssm put-parameter --overwrite`."
+  type        = "SecureString"
+  value       = "PLACEHOLDER_OPERATOR_OVERWRITES"
+
+  lifecycle {
+    ignore_changes  = [value]
+    prevent_destroy = true
+  }
+}

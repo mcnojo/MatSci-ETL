@@ -64,7 +64,7 @@ python3.11 -m venv "$INSTALL_DIR/env"
 export TMPDIR=/var/tmp
 "$INSTALL_DIR/env/bin/pip" install -e "$INSTALL_DIR[pipeline-cpu]"
 
-echo "[bootstrap] tree_llm key fetch"
+echo "[bootstrap] tree_llm + qdrant key fetch"
 mkdir -p "$SECRETS_DIR"
 {
     val=$(aws ssm get-parameter \
@@ -77,8 +77,29 @@ mkdir -p "$SECRETS_DIR"
         --name "${tree_llm_ssm_prefix}/openai_api_key" \
         --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
     echo "OPENAI_API_KEY=$val"
+    # Empty here (unpopulated slot) fails loud on first index attempt, not silently later.
+    val=$(aws ssm get-parameter \
+        --region "${aws_region}" \
+        --name "${qdrant_ssm_prefix}/url" \
+        --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+    echo "QDRANT_URL=$val"
+    val=$(aws ssm get-parameter \
+        --region "${aws_region}" \
+        --name "${qdrant_ssm_prefix}/api_key" \
+        --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+    echo "QDRANT_API_KEY=$val"
 } > "$SECRETS_FILE"
 chmod 600 "$SECRETS_FILE"
+
+echo "[bootstrap] fastembed cache + BM25 model prewarm"
+# Disk-backed cache — default /tmp is tmpfs on AL2023, so the ~50MB ONNX bundle
+# would take RAM and vanish on reboot. Prewarm here so the first index activity
+# doesn't pay the download cost inside a Temporal activity timeout window.
+mkdir -p /opt/fastembed_cache
+chown ec2-user:ec2-user /opt/fastembed_cache
+FASTEMBED_CACHE_PATH=/opt/fastembed_cache \
+    "$INSTALL_DIR/env/bin/python" -c \
+    "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"
 
 echo "[bootstrap] log files"
 install -m 0644 /dev/null "$WORKER_LOG"
@@ -215,6 +236,7 @@ Environment=AWS_REGION=${aws_region}
 Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
+Environment=FASTEMBED_CACHE_PATH=/opt/fastembed_cache
 Environment=OMP_NUM_THREADS=${torch_num_threads}
 Environment=MKL_NUM_THREADS=${torch_num_threads}
 Environment=TORCH_NUM_THREADS=${torch_num_threads}

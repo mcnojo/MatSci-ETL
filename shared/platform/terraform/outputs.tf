@@ -13,6 +13,21 @@ output "openai_api_key_param_name" {
   value       = aws_ssm_parameter.openai_api_key.name
 }
 
+output "qdrant_ssm_prefix" {
+  description = "Prefix under which Qdrant credential slots live. Downstream modules read params by name."
+  value       = var.qdrant_ssm_prefix
+}
+
+output "qdrant_url_param_name" {
+  description = "Full SSM name for the Qdrant Cloud URL slot."
+  value       = aws_ssm_parameter.qdrant_url.name
+}
+
+output "qdrant_api_key_param_name" {
+  description = "Full SSM name for the Qdrant Cloud API key slot."
+  value       = aws_ssm_parameter.qdrant_api_key.name
+}
+
 output "vllm_weights_bucket" {
   description = "Pre-staged vLLM weights bucket. Read by shared/vllm user_data (s3 sync) + IAM."
   value       = aws_s3_bucket.vllm_weights.bucket

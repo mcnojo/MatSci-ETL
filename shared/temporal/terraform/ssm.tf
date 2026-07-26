@@ -13,3 +13,11 @@ data "aws_ssm_parameter" "anthropic_api_key" {
 data "aws_ssm_parameter" "openai_api_key" {
   name = "${var.tree_llm_ssm_prefix}/openai_api_key"
 }
+
+data "aws_ssm_parameter" "qdrant_url" {
+  name = "${var.qdrant_ssm_prefix}/url"
+}
+
+data "aws_ssm_parameter" "qdrant_api_key" {
+  name = "${var.qdrant_ssm_prefix}/api_key"
+}

@@ -33,6 +33,7 @@ locals {
     aws_region             = var.region
     artifact_bucket        = var.artifact_bucket
     tree_llm_ssm_prefix    = var.tree_llm_ssm_prefix
+    qdrant_ssm_prefix      = var.qdrant_ssm_prefix
     live_ssm_prefix        = var.live_ssm_prefix
     log_group_name         = aws_cloudwatch_log_group.cpu_pipeline.name
     log_collection_enabled = var.log_collection_enabled ? "1" : "0"
@@ -147,6 +148,15 @@ data "aws_iam_policy_document" "cpu_pipeline" {
     actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
     resources = [
       "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.tree_llm_ssm_prefix}/*",
+    ]
+  }
+
+  # Qdrant URL + API key fetch at boot.
+  statement {
+    sid     = "QdrantSsmRead"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.qdrant_ssm_prefix}/*",
     ]
   }
 
