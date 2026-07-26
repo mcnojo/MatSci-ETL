@@ -1,6 +1,6 @@
 # Material Science ETL Pipeline
 
-A pipeline for pulling structure out of dense chemistry and materials science PDFs (in our case sodium-ion battery electrolyte literature).  It takes a raw PDF, rebuilds or infers the section hierarchy, pulls out the figures/tables/equations, runs vision OCR on each one, and drops the result into a hybrid vector index you can query.
+A pipeline for pulling structure out of dense chemistry and materials science PDFs (in our case sodium-ion battery electrolyte literature) for later use by agents.  It takes a raw PDF, rebuilds or infers the section hierarchy, pulls out the figures/tables/equations, runs vision OCR on each one, and produces a) a tree representation of the pdf and b) a hybrid vector index for later RRF / Reranking queries by agents.
 
 ## What it does
 
