@@ -32,7 +32,7 @@ Two lanes share the same `ProcessPdfWorkflow`, one for for live, 'always on' act
 | `prod/batch/` | `cli submit`    | GPU utilization |
 
 
-Pipeline logic lives in `pipeline/`; `prod/` is just deployment glue. Shared Temporal stuff (task queues, retry policies, client, activity I/O models) is under `shared/temporal/`. Long-lived SecureString slots (API keys, Qdrant creds) sit in `shared/platform/` so tearing compute down at night doesn't wipe them.
+Pipeline logic lives in `pipeline/`, `prod/` is just the actual deployment infra. Shared Temporal (task queues, retry policies, client, activity I/O models) is under `shared/temporal/`.
 
 ## Errata...
 
