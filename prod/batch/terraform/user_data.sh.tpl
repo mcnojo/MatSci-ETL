@@ -76,6 +76,34 @@ mkdir -p "$SECRETS_DIR"
 } > "$SECRETS_FILE"
 chmod 600 "$SECRETS_FILE"
 
+# Qdrant creds + fastembed BM25 prewarm — CPU role only. GPU role never
+# executes index_chunks_activity, so no creds and no ONNX download.
+if [ "${worker_role}" = "cpu" ]; then
+    echo "[bootstrap] qdrant key fetch"
+    {
+        val=$(aws ssm get-parameter \
+            --region "${aws_region}" \
+            --name "${qdrant_ssm_prefix}/url" \
+            --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+        echo "QDRANT_URL=$val"
+        val=$(aws ssm get-parameter \
+            --region "${aws_region}" \
+            --name "${qdrant_ssm_prefix}/api_key" \
+            --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+        echo "QDRANT_API_KEY=$val"
+    } >> "$SECRETS_FILE"
+
+    echo "[bootstrap] fastembed cache + BM25 prewarm"
+    # Disk-backed cache — default /tmp on AL2023 is tmpfs (~½×RAM) and vanishes
+    # on reboot. Prewarm here so the first index activity doesn't pay the ~50MB
+    # ONNX download inside a Temporal activity timeout window.
+    mkdir -p /opt/fastembed_cache
+    chown ec2-user:ec2-user /opt/fastembed_cache
+    FASTEMBED_CACHE_PATH=/opt/fastembed_cache \
+        "$INSTALL_DIR/env/bin/python" -c \
+        "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"
+fi
+
 echo "[bootstrap] worker log file"
 install -m 0644 /dev/null "$WORKER_LOG"
 
@@ -164,6 +192,7 @@ Environment=AWS_DEFAULT_REGION=${aws_region}
 Environment=ARTIFACT_BUCKET=${artifact_bucket}
 Environment=BATCH_LIFECYCLE_QUEUE=${lifecycle_queue}
 Environment=OCR_VLLM_PREFER_PRIVATE_IP=1
+Environment=FASTEMBED_CACHE_PATH=/opt/fastembed_cache
 # Cap torch/OMP/MKL threads — prevent N×vCPU oversubscription under max_concurrent.
 Environment=OMP_NUM_THREADS=${torch_num_threads}
 Environment=MKL_NUM_THREADS=${torch_num_threads}

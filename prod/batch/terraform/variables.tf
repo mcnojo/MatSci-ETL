@@ -111,6 +111,12 @@ variable "tree_llm_ssm_prefix" {
   default     = "/ocr-bench/tree_llm"
 }
 
+variable "qdrant_ssm_prefix" {
+  description = "SSM parameter prefix for Qdrant Cloud URL + API key (slots owned by shared/platform). CPU-role workers fetch on boot into /etc/ocr-benchmarking/tree_llm.env; GPU-role workers skip (no index activity)."
+  type        = string
+  default     = "/ocr-bench/qdrant"
+}
+
 variable "lifecycle_hook_heartbeat_s" {
   description = "Drain window before lifecycle hook defaults to CONTINUE. >= WORKER_GRACEFUL_SHUTDOWN_TIMEOUT."
   type        = number

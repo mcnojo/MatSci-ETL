@@ -122,6 +122,7 @@ locals {
     aws_region             = var.region
     artifact_bucket        = local.artifact_bucket
     tree_llm_ssm_prefix    = var.tree_llm_ssm_prefix
+    qdrant_ssm_prefix      = var.qdrant_ssm_prefix
     lifecycle_queue        = aws_sqs_queue.lifecycle_events.url
     log_group_name         = aws_cloudwatch_log_group.batch_worker.name
     log_collection_enabled = var.log_collection_enabled ? "1" : "0"

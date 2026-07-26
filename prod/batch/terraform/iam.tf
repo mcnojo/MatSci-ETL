@@ -53,6 +53,15 @@ data "aws_iam_policy_document" "batch_worker" {
     ]
   }
 
+  # Uniform across roles — only the CPU role actually reads at boot.
+  statement {
+    sid     = "QdrantSsmRead"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:*:parameter${var.qdrant_ssm_prefix}/*",
+    ]
+  }
+
   statement {
     sid       = "SsmKmsDecrypt"
     actions   = ["kms:Decrypt"]
