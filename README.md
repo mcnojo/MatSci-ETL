@@ -19,9 +19,9 @@ A pipeline for pulling structure out of dense chemistry and materials science PD
 
 Two lanes share the same `ProcessPdfWorkflow`, one for for live, 'always on' activity, and another for batch jobs:
 
-Live lane
+<img src="assets/live_motif.svg" alt="Live lane" width="100%">
 
-Batch lane
+<img src="assets/batch_motif.svg" alt="Batch lane" width="100%">
 
 
 | Lane          | Trigger         | Optimizes for   |
